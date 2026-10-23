@@ -89,6 +89,7 @@ eal.save_loaded_asset(mat)
 # The body's two material instances (Body, Joints) switch over to this material.
 for mi_path in ("/Game/Characters/MannequinDemake/Body", "/Game/Characters/MannequinDemake/Joints"):
     mi = unreal.load_asset(mi_path)
+    mi.modify()
     MEL.set_material_instance_parent(mi, mat)
-    eal.save_loaded_asset(mi)
+    eal.save_asset(mi_path, only_if_is_dirty=False)
 unreal.log("PM mage body material done")
