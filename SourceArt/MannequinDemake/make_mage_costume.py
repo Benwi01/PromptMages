@@ -83,9 +83,8 @@ build("HatBand", [("cyl", xf((0, -2, 178.6)), dict(r=13.4, h=3.5, steps=7))], tr
 chin, beard_tip = (0, 7, 166), (0, 21, 140)
 build("Beard", [("cone", xf(chin, along(chin, beard_tip), (1.0, 0.7, 1.0)), dict(r0=9, r1=0.8, h=29, steps=5))], beard)
 
-# --- Robe top in two pieces so it bends with the spine (one rigid piece pokes out when the mage stoops). ---
-build("RobeChest", [("cyl", xf((0, 0, 127), None, (1.15, 0.97, 1.0)), dict(r=22.5, h=31, steps=6))], robe)  # bone DEF-spine_003
-build("RobeBelly", [("cyl", xf((0, -1, 98), None, (1.1, 0.95, 1.0)), dict(r=20.5, h=33, steps=6))], robe)    # bone DEF-spine_001
+# The robe on the chest, arms and legs is painted onto the body itself (make_mage_body_material.py), so it
+# bends with the body. Only loose pieces that hang off it are separate meshes.
 
 # --- Robe skirt (bone DEF-spine, the hips): flares out to the knees. ---
 build("RobeSkirt", [("cone", xf((0, -1, 104), unreal.Rotator(roll=180, pitch=0, yaw=0), (1.0, 1.0, 1.0)), dict(r0=20, r1=31, h=54, steps=6))], robe)
@@ -93,17 +92,15 @@ build("RobeSkirt", [("cone", xf((0, -1, 104), unreal.Rotator(roll=180, pitch=0, 
 # --- Belt (bone DEF-spine). ---
 build("Belt", [("cyl", xf((0, -1, 99), None, (1.2, 1.05, 1.0)), dict(r=19.5, h=5.5, steps=6))], belt)
 
-# --- Sleeves and bell-shaped cuffs (bones DEF-upper_arm_* and DEF-forearm_*). ---
+# --- Bell-shaped cuffs (bones DEF-upper_arm_* and DEF-forearm_*). ---
 for side, sx in (("L", 1), ("R", -1)):
-    shoulder = (16.5 * sx, -10.4, 153.5)
     elbow = (37.2 * sx, -11.5, 126.4)
     wrist = (57.7 * sx, -0.5, 110.9)
-    build("Sleeve" + side, [("cone", xf(lerp(shoulder, elbow, -0.1), along(shoulder, elbow)), dict(r0=8, r1=6.8, h=38, steps=6))], robe)
-    build("ForeSleeve" + side, [("cone", xf(lerp(elbow, wrist, -0.08), along(elbow, wrist)), dict(r0=6.8, r1=6.6, h=19, steps=6))], robe)
     build("Cuff" + side, [("cone", xf(lerp(elbow, wrist, 0.55), along(elbow, wrist)), dict(r0=6.5, r1=9.5, h=11, steps=6))], trim)
 
-# Older single-piece robe top, replaced by RobeChest + RobeBelly.
-if eal.does_asset_exist(DEST + "/SM_Mage_RobeTop"):
-    eal.delete_asset(DEST + "/SM_Mage_RobeTop")
+# Older rigid robe pieces, replaced by the painted body.
+for old in ("RobeTop", "RobeChest", "RobeBelly", "SleeveL", "SleeveR", "ForeSleeveL", "ForeSleeveR"):
+    if eal.does_asset_exist(DEST + "/SM_Mage_" + old):
+        eal.delete_asset(DEST + "/SM_Mage_" + old)
 
 unreal.log("PM mage costume done")

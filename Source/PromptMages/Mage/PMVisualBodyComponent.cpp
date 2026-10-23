@@ -51,14 +51,8 @@ UPMVisualBodyComponent::UPMVisualBodyComponent()
 	Wear(TEXT("SM_Mage_Hat"), TEXT("DEF-head"), true);
 	Wear(TEXT("SM_Mage_HatBand"), TEXT("DEF-head"), true);
 	Wear(TEXT("SM_Mage_Beard"), TEXT("DEF-head"), true);
-	Wear(TEXT("SM_Mage_RobeChest"), TEXT("DEF-spine_003"), false);
-	Wear(TEXT("SM_Mage_RobeBelly"), TEXT("DEF-spine_001"), false);
 	Wear(TEXT("SM_Mage_RobeSkirt"), TEXT("DEF-spine"), false);
 	Wear(TEXT("SM_Mage_Belt"), TEXT("DEF-spine"), false);
-	Wear(TEXT("SM_Mage_SleeveL"), TEXT("DEF-upper_arm_L"), false);
-	Wear(TEXT("SM_Mage_SleeveR"), TEXT("DEF-upper_arm_R"), false);
-	Wear(TEXT("SM_Mage_ForeSleeveL"), TEXT("DEF-forearm_L"), false);
-	Wear(TEXT("SM_Mage_ForeSleeveR"), TEXT("DEF-forearm_R"), false);
 	Wear(TEXT("SM_Mage_CuffL"), TEXT("DEF-forearm_L"), false);
 	Wear(TEXT("SM_Mage_CuffR"), TEXT("DEF-forearm_R"), false);
 
