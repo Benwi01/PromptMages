@@ -9,6 +9,8 @@
 
 class UStaticMeshComponent;
 class UPhysicalMaterial;
+class UPointLightComponent;
+class UMaterialInstanceDynamic;
 
 /**
  * A summoned object. Built at runtime from a noun definition out of welded primitive parts,
@@ -42,6 +44,16 @@ public:
 	/** Opens a Mystery Crate: replaces it with a random library object. */
 	void RevealMystery();
 
+	// --- Fire & frost (wand spells) ---
+
+	/** Sets the object alight if it can burn (Flammability > 0). Frozen objects thaw instead. Returns true if it caught fire. */
+	bool Ignite();
+	void Extinguish();
+	/** Freezes the object nearly in place for Seconds and puts out any fire. */
+	void Freeze(float Seconds);
+	bool IsOnFire() const { return bOnFire; }
+	bool IsFrozen() const { return bFrozen; }
+
 	virtual void Tick(float DeltaSeconds) override;
 
 protected:
@@ -50,6 +62,33 @@ protected:
 
 	void UpdateShadow();
 	void Pop(const FString& Message);
+	void UpdateFire(float DeltaSeconds);
+	void UpdateFrost(float DeltaSeconds);
+	void ApplyTint();
+	void RestoreDamping();
+	UMaterialInstanceDynamic* Paint(UStaticMeshComponent* Comp, const FLinearColor& Color);
+
+	UPROPERTY()
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> PartMaterials;
+	TArray<FLinearColor> PartColors;
+
+	UPROPERTY()
+	TObjectPtr<UPointLightComponent> FireLight;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UStaticMeshComponent>> Flames;
+
+	bool bOnFire = false;
+	float BurnDuration = 1.f;
+	float BurnTimeLeft = 0.f;
+	float SpreadTimer = 0.f;
+	float TintTimer = 0.f;
+	/** 0..1 how burnt the object looks. */
+	float Char = 0.f;
+
+	bool bFrozen = false;
+	float FrozenTimeLeft = 0.f;
+	float HalfHeight = 50.f;
 
 	UPROPERTY(VisibleAnywhere, Category = "Prompt Mages")
 	TObjectPtr<UStaticMeshComponent> Body;

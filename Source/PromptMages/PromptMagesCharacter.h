@@ -39,6 +39,10 @@ class APromptMagesCharacter : public ACharacter
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	class UPMActiveRagdollComponent* ActiveRagdoll;
 
+	/** Prompt-Mages: the apprentice wand (Q) */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	class UPMWandComponent* Wand;
+
 protected:
 
 	/** Jump Input Action */

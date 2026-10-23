@@ -4,7 +4,9 @@
 #include "PMObjectLibrary.h"
 #include "PMSpellSubsystem.h"
 #include "PromptMages.h"
+#include "Components/PointLightComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/OverlapResult.h"
 #include "Engine/CollisionProfile.h"
 #include "Engine/World.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -67,6 +69,7 @@ void APMSpawnedObject::Setup(const FPMNounDef& Def, const FPMTraits& InTraits, f
 	SpawnTime = GetWorld()->GetTimeSeconds();
 	StartZ = GetActorLocation().Z;
 	ShadowRadius = ComputeRadius(Def, SizeScale);
+	HalfHeight = ComputeHalfHeight(Def, SizeScale);
 
 #if WITH_EDITOR
 	SetActorLabel(FString::Printf(TEXT("PM_%s"), *DisplayName.Replace(TEXT(" "), TEXT("_"))));
@@ -89,7 +92,7 @@ void APMSpawnedObject::Setup(const FPMNounDef& Def, const FPMTraits& InTraits, f
 	Body->SetStaticMesh(FPMObjectLibrary::GetShapeMesh(RootPart.Shape));
 	Body->SetWorldScale3D(RootScale);
 	Body->SetPhysMaterialOverride(PhysMaterial);
-	PMObj::Paint(Body, RootPart.Color);
+	Paint(Body, RootPart.Color);
 
 	Shadow->SetStaticMesh(FPMObjectLibrary::GetShapeMesh(EPMShape::Cylinder));
 	PMObj::Paint(Shadow, FLinearColor(0.01f, 0.01f, 0.012f));
@@ -122,7 +125,7 @@ void APMSpawnedObject::Setup(const FPMNounDef& Def, const FPMTraits& InTraits, f
 		Comp->SetPhysMaterialOverride(PhysMaterial);
 		Comp->SetNotifyRigidBodyCollision(true);
 		Comp->BodyInstance.SetMassOverride(PartMass(P), true);
-		PMObj::Paint(Comp, P.Color);
+		Paint(Comp, P.Color);
 		Comp->RegisterComponent();
 		Comp->AttachToComponent(Body, FAttachmentTransformRules(EAttachmentRule::KeepRelative, true));
 		AddInstanceComponent(Comp);
@@ -132,9 +135,7 @@ void APMSpawnedObject::Setup(const FPMNounDef& Def, const FPMTraits& InTraits, f
 
 	UE_LOG(LogPromptMages, Verbose, TEXT("%s: target %.1f kg, physics mass %.1f kg"), *DisplayName, Traits.WeightKg, Body->GetMass());
 
-	const bool bFloats = Traits.FloatsInAir();
-	Body->SetLinearDamping(bFloats ? 0.8f : (Traits.Elasticity > 1.f ? 0.f : 0.01f));
-	Body->SetAngularDamping(bFloats ? 1.5f : 0.1f);
+	RestoreDamping();
 
 	Body->OnComponentHit.AddDynamic(this, &APMSpawnedObject::OnBodyHit);
 	Shadow->SetVisibility(true);
@@ -175,8 +176,15 @@ void APMSpawnedObject::Tick(float DeltaSeconds)
 		return;
 	}
 
+	UpdateFrost(DeltaSeconds);
+	UpdateFire(DeltaSeconds);
+	if (bDying)
+	{
+		return;
+	}
+
 	// Buoyancy above 1.5 lifts the object in air like a balloon (GDD 3.2).
-	if (Traits.FloatsInAir())
+	if (Traits.FloatsInAir() && !bFrozen)
 	{
 		const float Gravity = -GetWorld()->GetGravityZ();
 		const float Lift = Gravity * (1.f + (Traits.Buoyancy - 1.5f) * 0.4f);
@@ -309,4 +317,227 @@ void APMSpawnedObject::RevealMystery()
 		Spells->SpawnNoun(Surprise, Surprise.Traits, 1.f, Surprise.DisplayName, Ground, CasterName, false, FString(), 60.f);
 	}
 	GetWorldTimerManager().SetTimerForNextTick(FTimerDelegate::CreateWeakLambda(this, [this]() { Destroy(); }));
+}
+
+// --- Fire & frost --------------------------------------------------------------------------------
+
+namespace PMFire
+{
+	const FLinearColor FlameColor(1.f, 0.45f, 0.05f);
+	const FLinearColor IceColor(0.65f, 0.9f, 1.f);
+	constexpr int32 NumFlames = 3;
+}
+
+UMaterialInstanceDynamic* APMSpawnedObject::Paint(UStaticMeshComponent* Comp, const FLinearColor& Color)
+{
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(FPMObjectLibrary::GetShapeMaterial(), Comp);
+	if (MID)
+	{
+		MID->SetVectorParameterValue(FPMObjectLibrary::ColorParameterName, Color);
+		Comp->SetMaterial(0, MID);
+		PartMaterials.Add(MID);
+		PartColors.Add(Color);
+	}
+	return MID;
+}
+
+void APMSpawnedObject::RestoreDamping()
+{
+	const bool bFloats = Traits.FloatsInAir();
+	Body->SetLinearDamping(bFloats ? 0.8f : (Traits.Elasticity > 1.f ? 0.f : 0.01f));
+	Body->SetAngularDamping(bFloats ? 1.5f : 0.1f);
+}
+
+void APMSpawnedObject::ApplyTint()
+{
+	for (int32 i = 0; i < PartMaterials.Num(); ++i)
+	{
+		if (!PartMaterials[i])
+		{
+			continue;
+		}
+		FLinearColor Color = FMath::Lerp(PartColors[i], FLinearColor(0.03f, 0.025f, 0.02f), Char * 0.85f);
+		if (bFrozen)
+		{
+			Color = FMath::Lerp(Color, PMFire::IceColor, 0.65f);
+		}
+		PartMaterials[i]->SetVectorParameterValue(FPMObjectLibrary::ColorParameterName, Color);
+	}
+}
+
+bool APMSpawnedObject::Ignite()
+{
+	if (bOnFire || bDying || Traits.Flammability <= 0.f)
+	{
+		return false;
+	}
+	if (bFrozen)
+	{
+		FrozenTimeLeft = FMath::Min(FrozenTimeLeft, 0.3f); // Fire melts the ice instead.
+		return false;
+	}
+
+	bOnFire = true;
+	BurnDuration = 3.f + 4.f * Traits.Flammability; // Haybale ~15 s, crate ~11 s, ball ~7 s.
+	BurnTimeLeft = BurnDuration;
+	SpreadTimer = 0.5f;
+
+	FireLight = NewObject<UPointLightComponent>(this);
+	FireLight->SetupAttachment(Body);
+	FireLight->SetUsingAbsoluteScale(true);
+	FireLight->SetLightColor(PMFire::FlameColor);
+	FireLight->SetIntensity(6000.f);
+	FireLight->SetAttenuationRadius(ShadowRadius * 4.f + 250.f);
+	FireLight->SetCastShadows(false);
+	FireLight->RegisterComponent();
+
+	for (int32 i = 0; i < PMFire::NumFlames; ++i)
+	{
+		UStaticMeshComponent* Flame = NewObject<UStaticMeshComponent>(this);
+		Flame->SetStaticMesh(FPMObjectLibrary::GetShapeMesh(EPMShape::Cone));
+		Flame->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Flame->SetCastShadow(false);
+		Flame->SetUsingAbsoluteLocation(true);
+		Flame->SetUsingAbsoluteRotation(true);
+		Flame->SetUsingAbsoluteScale(true);
+		if (UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(FPMObjectLibrary::GetShapeMaterial(), Flame))
+		{
+			MID->SetVectorParameterValue(FPMObjectLibrary::ColorParameterName, i == 0 ? FLinearColor(1.f, 0.7f, 0.1f) : FLinearColor(1.f, 0.25f, 0.02f));
+			Flame->SetMaterial(0, MID);
+		}
+		Flame->SetupAttachment(Body);
+		Flame->RegisterComponent();
+		Flames.Add(Flame);
+	}
+	return true;
+}
+
+void APMSpawnedObject::Extinguish()
+{
+	if (!bOnFire)
+	{
+		return;
+	}
+	bOnFire = false;
+	if (FireLight)
+	{
+		FireLight->DestroyComponent();
+		FireLight = nullptr;
+	}
+	for (UStaticMeshComponent* Flame : Flames)
+	{
+		if (Flame)
+		{
+			Flame->DestroyComponent();
+		}
+	}
+	Flames.Reset();
+}
+
+void APMSpawnedObject::UpdateFire(float DeltaSeconds)
+{
+	if (!bOnFire)
+	{
+		return;
+	}
+
+	BurnTimeLeft -= DeltaSeconds;
+	Char = FMath::Max(Char, 1.f - BurnTimeLeft / BurnDuration);
+
+	// Flicker: flames hop around the top of the object and pulse, always pointing up.
+	const FVector Top = GetActorLocation() + FVector(0.f, 0.f, HalfHeight * 0.4f);
+	const float Size = FMath::Clamp(ShadowRadius / 50.f, 0.3f, 3.f);
+	for (int32 i = 0; i < Flames.Num(); ++i)
+	{
+		const FVector Jitter(FMath::FRandRange(-0.4f, 0.4f) * ShadowRadius, FMath::FRandRange(-0.4f, 0.4f) * ShadowRadius, 0.f);
+		const float Height = Size * FMath::FRandRange(0.5f, 0.9f) * (i == 0 ? 1.2f : 0.8f);
+		Flames[i]->SetWorldLocationAndRotation(Top + Jitter + FVector(0.f, 0.f, Height * 50.f), FRotator::ZeroRotator);
+		Flames[i]->SetWorldScale3D(FVector(Size * 0.35f, Size * 0.35f, Height));
+	}
+	if (FireLight)
+	{
+		FireLight->SetWorldLocation(Top + FVector(0.f, 0.f, 30.f));
+		FireLight->SetIntensity(FMath::FRandRange(4000.f, 8000.f));
+	}
+
+	TintTimer -= DeltaSeconds;
+	if (TintTimer <= 0.f)
+	{
+		TintTimer = 0.25f;
+		ApplyTint();
+	}
+
+	// Fire spreads object to object by proximity (GDD 3.2). More flammable neighbours catch more easily.
+	SpreadTimer -= DeltaSeconds;
+	if (SpreadTimer <= 0.f)
+	{
+		SpreadTimer = 0.5f;
+		TArray<FOverlapResult> Overlaps;
+		FCollisionObjectQueryParams Objects;
+		Objects.AddObjectTypesToQuery(ECC_PhysicsBody);
+		Objects.AddObjectTypesToQuery(ECC_WorldDynamic);
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(PMFireSpread), false, this);
+		GetWorld()->OverlapMultiByObjectType(Overlaps, GetActorLocation(), FQuat::Identity, Objects,
+			FCollisionShape::MakeSphere(ShadowRadius + 120.f), Params);
+
+		TSet<APMSpawnedObject*> Neighbours;
+		for (const FOverlapResult& Overlap : Overlaps)
+		{
+			if (APMSpawnedObject* Other = Cast<APMSpawnedObject>(Overlap.GetActor()))
+			{
+				Neighbours.Add(Other);
+			}
+		}
+		for (APMSpawnedObject* Other : Neighbours)
+		{
+			if (!Other->IsOnFire() && FMath::FRand() < 0.2f * Other->GetTraits().Flammability)
+			{
+				Other->Ignite();
+			}
+		}
+	}
+
+	if (BurnTimeLeft <= 0.f)
+	{
+		Extinguish();
+		Char = 1.f;
+		ApplyTint();
+		if (Traits.Flammability >= 2.f)
+		{
+			Pop(FString::Printf(TEXT("%s burned to ash."), *DisplayName));
+		}
+	}
+}
+
+void APMSpawnedObject::Freeze(float Seconds)
+{
+	if (bDying)
+	{
+		return;
+	}
+	Extinguish();
+	bFrozen = true;
+	FrozenTimeLeft = FMath::Max(FrozenTimeLeft, Seconds);
+
+	// Nearly locked in place: kill most of the motion and make it very sluggish until it thaws.
+	Body->SetPhysicsLinearVelocity(Body->GetPhysicsLinearVelocity() * 0.1f);
+	Body->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+	Body->SetLinearDamping(25.f);
+	Body->SetAngularDamping(25.f);
+	ApplyTint();
+}
+
+void APMSpawnedObject::UpdateFrost(float DeltaSeconds)
+{
+	if (!bFrozen)
+	{
+		return;
+	}
+	FrozenTimeLeft -= DeltaSeconds;
+	if (FrozenTimeLeft <= 0.f)
+	{
+		bFrozen = false;
+		RestoreDamping();
+		ApplyTint();
+	}
 }

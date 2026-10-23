@@ -2,6 +2,7 @@
 
 #include "PMHudWidget.h"
 #include "PMActiveRagdollComponent.h"
+#include "PMWandComponent.h"
 #include "PMPromptParser.h"
 #include "PMSpellcasterComponent.h"
 #include "PMSpellSubsystem.h"
@@ -124,8 +125,20 @@ void UPMHudWidget::BuildTree()
 	StatusText->SetShadowOffset(FVector2D(1.f, 1.f));
 	Place(StatusText, FAnchors(0.f, 0.f), FVector2D(0.f, 0.f), FMargin(24.f, 20.f, 0.f, 0.f), true);
 
+	// Wand: spell bar and personal mana, bottom centre (only while the wand is drawn or mana is refilling).
+	SpellText = MakeText(FString(), 17, HudWhite);
+	SpellText->SetAutoWrapText(false);
+	SpellText->SetShadowOffset(FVector2D(1.f, 1.f));
+	SpellText->SetJustification(ETextJustify::Center);
+	Place(SpellText, FAnchors(0.5f, 1.f), FVector2D(0.5f, 1.f), FMargin(0.f, -70.f, 0.f, 0.f), true);
+
+	ManaBar = WidgetTree->ConstructWidget<UProgressBar>(UProgressBar::StaticClass());
+	ManaBar->SetFillColorAndOpacity(FLinearColor(0.35f, 0.45f, 1.f));
+	ManaBar->SetVisibility(ESlateVisibility::Collapsed);
+	Place(ManaBar, FAnchors(0.5f, 1.f), FVector2D(0.5f, 1.f), FMargin(0.f, -50.f, 320.f, 10.f), false);
+
 	// Controls hint, bottom left.
-	HelpText = MakeText(TEXT("Tab  Spellbook     Hold LMB / RMB  Left / right hand     Both + look up  Climb     Wheel  Reach     Shift  Sprint     Ctrl  Crouch"), 13, FLinearColor(1.f, 1.f, 1.f, 0.6f));
+	HelpText = MakeText(TEXT("Tab  Spellbook     Hold LMB / RMB  Left / right hand     Both + look up  Climb     Wheel  Reach     Shift  Sprint     Ctrl  Crouch     Q  Wand (RMB cast, 1-4 spell)"), 13, FLinearColor(1.f, 1.f, 1.f, 0.6f));
 	HelpText->SetAutoWrapText(false);
 	HelpText->SetShadowOffset(FVector2D(1.f, 1.f));
 	Place(HelpText, FAnchors(0.f, 1.f), FVector2D(0.f, 1.f), FMargin(24.f, -16.f, 0.f, 0.f), true);
@@ -405,6 +418,37 @@ void UPMHudWidget::RefreshStatus()
 		HandStates.Add(TEXT("climbing"));
 	}
 	HandText->SetText(FText::FromString(FString::Join(HandStates, TEXT("   "))));
+
+	// Wand.
+	const UPMWandComponent* Wand = C->GetOwner()->FindComponentByClass<UPMWandComponent>();
+	const bool bWandOut = Wand && Wand->IsWandOut();
+	if (bWandOut)
+	{
+		TArray<FString> Slots;
+		for (int32 i = 0; i < static_cast<int32>(EPMSpell::Count); ++i)
+		{
+			const EPMSpell Spell = static_cast<EPMSpell>(i);
+			const FPMSpellDef& Def = FPMSpellDef::Get(Spell);
+			const float SpellCooldown = Wand->GetCooldownRemaining(Spell);
+			FString Entry = FString::Printf(TEXT("%d %s %d"), i + 1, *Def.Name, FMath::RoundToInt(Def.ManaCost));
+			if (SpellCooldown > 0.f)
+			{
+				Entry += TEXT(" ...");
+			}
+			Slots.Add(Spell == Wand->GetSelectedSpell() ? FString::Printf(TEXT("[ %s ]"), *Entry) : Entry);
+		}
+		SpellText->SetText(FText::FromString(FString::Join(Slots, TEXT("      "))));
+	}
+	else
+	{
+		SpellText->SetText(FText::GetEmpty());
+	}
+	const bool bShowMana = Wand && (bWandOut || Wand->GetMana() < Wand->GetMaxMana() - 0.5f);
+	ManaBar->SetVisibility(bShowMana ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	if (Wand)
+	{
+		ManaBar->SetPercent(Wand->GetMana() / FMath::Max(Wand->GetMaxMana(), 1.f));
+	}
 
 	// Messages fade out after a few seconds.
 	const double Now = GetWorld()->GetTimeSeconds();

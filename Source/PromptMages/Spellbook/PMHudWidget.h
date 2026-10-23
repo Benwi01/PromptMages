@@ -64,6 +64,12 @@ private:
 	TObjectPtr<UTextBlock> HandText;
 
 	UPROPERTY()
+	TObjectPtr<UProgressBar> ManaBar;
+
+	UPROPERTY()
+	TObjectPtr<UTextBlock> SpellText;
+
+	UPROPERTY()
 	TObjectPtr<UTextBlock> ToastText;
 
 	UPROPERTY()

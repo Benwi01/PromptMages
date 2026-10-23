@@ -29,6 +29,7 @@ public class PromptMages : ModuleRules
 			"PromptMages",
 			"PromptMages/Spellbook",
 			"PromptMages/Mage",
+			"PromptMages/Magic",
 			"PromptMages/Variant_Horror",
 			"PromptMages/Variant_Horror/UI",
 			"PromptMages/Variant_Shooter",

@@ -3,6 +3,7 @@
 #include "PMActiveRagdollComponent.h"
 #include "PMSpawnedObject.h"
 #include "PMSpellcasterComponent.h"
+#include "PMWandComponent.h"
 #include "PMSpellSubsystem.h"
 #include "PromptMages.h"
 #include "PromptMagesCharacter.h"
@@ -207,8 +208,9 @@ void UPMActiveRagdollComponent::TryBindInput()
 	ArmInput->RegisterComponent();
 	ArmInput->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &UPMActiveRagdollComponent::OnLeftPressed);
 	ArmInput->BindKey(EKeys::LeftMouseButton, IE_Released, this, &UPMActiveRagdollComponent::OnLeftReleased);
-	ArmInput->BindKey(EKeys::RightMouseButton, IE_Pressed, this, &UPMActiveRagdollComponent::OnRightPressed);
-	ArmInput->BindKey(EKeys::RightMouseButton, IE_Released, this, &UPMActiveRagdollComponent::OnRightReleased);
+	// RMB is shared with the wand (it casts while the wand is drawn), so don't consume it.
+	ArmInput->BindKey(EKeys::RightMouseButton, IE_Pressed, this, &UPMActiveRagdollComponent::OnRightPressed).bConsumeInput = false;
+	ArmInput->BindKey(EKeys::RightMouseButton, IE_Released, this, &UPMActiveRagdollComponent::OnRightReleased).bConsumeInput = false;
 	ArmInput->BindKey(EKeys::MouseScrollUp, IE_Pressed, this, &UPMActiveRagdollComponent::OnReachOut);
 	ArmInput->BindKey(EKeys::MouseScrollDown, IE_Pressed, this, &UPMActiveRagdollComponent::OnReachIn);
 	ArmInput->BindKey(EKeys::LeftShift, IE_Pressed, this, &UPMActiveRagdollComponent::OnSprintPressed);
@@ -228,6 +230,16 @@ bool UPMActiveRagdollComponent::GetView(FVector& OutLocation, FRotator& OutRotat
 		return true;
 	}
 	return false;
+}
+
+bool UPMActiveRagdollComponent::IsWandHand(const FPMArmState& Arm) const
+{
+	if (Arm.Side < 0.f)
+	{
+		return false;
+	}
+	const UPMWandComponent* Wand = GetOwner()->FindComponentByClass<UPMWandComponent>();
+	return Wand && Wand->IsWandOut();
 }
 
 bool UPMActiveRagdollComponent::IsSpellbookOpen() const
@@ -441,7 +453,7 @@ void UPMActiveRagdollComponent::UpdateStoopAndCrouch(float DeltaTime)
 	ACharacter* Character = CastChecked<ACharacter>(GetOwner());
 
 	// Bend over when reaching while looking down, so hands can get to things on the floor.
-	const bool bReachingByHand = !bArmsLocked && (Arms[0].bButtonDown || Arms[1].bButtonDown);
+	const bool bReachingByHand = !bArmsLocked && (Arms[0].bButtonDown || (Arms[1].bButtonDown && !IsWandHand(Arms[1])));
 	const float LookDown = -FRotator::NormalizeAxis(Character->GetControlRotation().Pitch);
 	float Target = bReachingByHand
 		? FMath::Clamp((LookDown - StoopStartPitch) / FMath::Max(StoopFullPitch - StoopStartPitch, 1.f), 0.f, 1.f)
@@ -507,6 +519,30 @@ void UPMActiveRagdollComponent::UpdateArm(FPMArmState& Arm, float DeltaTime, con
 {
 	const double Now = GetWorld()->GetTimeSeconds();
 	const bool bReaching = Arm.Reach->GetGrabbedComponent() != nullptr;
+
+	// With the wand drawn, the right arm holds it out toward the crosshair instead of grabbing.
+	if (IsWandHand(Arm) && !bArmsLocked)
+	{
+		if (Arm.IsGripping())
+		{
+			ReleaseGrip(Arm, false);
+		}
+		if (!bReaching)
+		{
+			StartReach(Arm);
+		}
+		const FVector Right = FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Y);
+		FVector Target = ViewLocation + ViewRotation.Vector() * 55.f + Right * 16.f - FVector(0.f, 0.f, 12.f);
+		const FVector Shoulder = GetShoulderLocation(Arm);
+		if (FVector::DistSquared(Target, Shoulder) > FMath::Square(ArmLength))
+		{
+			Target = Shoulder + (Target - Shoulder).GetSafeNormal() * ArmLength;
+		}
+		Arm.Reach->SetTargetLocation(Target);
+		Arm.Load = 0.f;
+		Arm.Stamina = FMath::Min(1.f, Arm.Stamina + DeltaTime * GripRegenPerSecond);
+		return;
+	}
 
 	// While the Spellbook is open the arm keeps doing exactly what it was doing.
 	if (!bArmsLocked)

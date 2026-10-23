@@ -11,6 +11,7 @@
 #include "PromptMages.h"
 #include "Spellbook/PMSpellcasterComponent.h"
 #include "Mage/PMActiveRagdollComponent.h"
+#include "Magic/PMWandComponent.h"
 
 APromptMagesCharacter::APromptMagesCharacter()
 {
@@ -40,6 +41,9 @@ APromptMagesCharacter::APromptMagesCharacter()
 
 	// Prompt-Mages: active-ragdoll body and the two grabbing arms
 	ActiveRagdoll = CreateDefaultSubobject<UPMActiveRagdollComponent>(TEXT("ActiveRagdoll"));
+
+	// Prompt-Mages: the apprentice wand every mage starts with
+	Wand = CreateDefaultSubobject<UPMWandComponent>(TEXT("Wand"));
 
 	// configure the character comps
 	GetMesh()->SetOwnerNoSee(true);

@@ -240,6 +240,8 @@ private:
 	APlayerController* GetLocalPC() const;
 	bool GetView(FVector& OutLocation, FRotator& OutRotation) const;
 	bool IsSpellbookOpen() const;
+	/** True for the right arm while the wand is drawn: it holds the wand instead of grabbing. */
+	bool IsWandHand(const FPMArmState& Arm) const;
 
 	void OnLeftPressed()   { Arms[0].bButtonDown = true; }
 	void OnLeftReleased()  { Arms[0].bButtonDown = false; }

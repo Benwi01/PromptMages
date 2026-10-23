@@ -1,0 +1,392 @@
+// Prompt-Mages: the apprentice wand - Fireball, Gust, Tether and Frost bolt, paid for with personal mana.
+
+#include "PMWandComponent.h"
+#include "PMObjectLibrary.h"
+#include "PMSpawnedObject.h"
+#include "PMSpellFX.h"
+#include "PMSpellProjectile.h"
+#include "PMSpellSubsystem.h"
+#include "PMSpellcasterComponent.h"
+#include "Components/InputComponent.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/OverlapResult.h"
+#include "Engine/World.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/PlayerController.h"
+#include "Materials/MaterialInstanceDynamic.h"
+
+namespace PMWand
+{
+	const FName Hand(TEXT("hand_r"));
+	constexpr float StickLength = 34.f;
+}
+
+UPMWandComponent::UPMWandComponent()
+{
+	PrimaryComponentTick.bCanEverTick = true;
+	PrimaryComponentTick.TickGroup = TG_PostPhysics;
+}
+
+void UPMWandComponent::BeginPlay()
+{
+	Super::BeginPlay();
+	Mana = MaxMana;
+
+	// A plain stick with a glowing tip that takes the selected spell's colour.
+	auto MakePart = [this](EPMShape Shape, const FLinearColor& Color, UMaterialInstanceDynamic** OutMID)
+	{
+		UStaticMeshComponent* Part = NewObject<UStaticMeshComponent>(GetOwner());
+		Part->SetStaticMesh(FPMObjectLibrary::GetShapeMesh(Shape));
+		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Part->SetCastShadow(false);
+		Part->SetUsingAbsoluteLocation(true);
+		Part->SetUsingAbsoluteRotation(true);
+		Part->SetUsingAbsoluteScale(true);
+		Part->SetHiddenInGame(true);
+		if (UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(FPMObjectLibrary::GetShapeMaterial(), Part))
+		{
+			MID->SetVectorParameterValue(FPMObjectLibrary::ColorParameterName, Color);
+			Part->SetMaterial(0, MID);
+			if (OutMID)
+			{
+				*OutMID = MID;
+			}
+		}
+		Part->SetupAttachment(GetOwner()->GetRootComponent());
+		Part->RegisterComponent();
+		return Part;
+	};
+	WandStick = MakePart(EPMShape::Cylinder, FLinearColor(0.3f, 0.17f, 0.07f), nullptr);
+	UMaterialInstanceDynamic* TipMID = nullptr;
+	WandTip = MakePart(EPMShape::Sphere, FPMSpellDef::Get(Selected).Color, &TipMID);
+	TipMaterial = TipMID;
+
+	TryBindInput();
+}
+
+void UPMWandComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (APlayerController* PC = BoundPC.Get())
+	{
+		if (WandInput)
+		{
+			PC->PopInputComponent(WandInput);
+		}
+	}
+	Super::EndPlay(EndPlayReason);
+}
+
+APlayerController* UPMWandComponent::GetLocalPC() const
+{
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	APlayerController* PC = Pawn ? Cast<APlayerController>(Pawn->GetController()) : nullptr;
+	return (PC && PC->IsLocalController()) ? PC : nullptr;
+}
+
+void UPMWandComponent::TryBindInput()
+{
+	APlayerController* PC = GetLocalPC();
+	if (!PC || BoundPC.Get() == PC)
+	{
+		return;
+	}
+	BoundPC = PC;
+
+	WandInput = NewObject<UInputComponent>(GetOwner(), TEXT("PMWandInput"));
+	WandInput->RegisterComponent();
+	WandInput->BindKey(EKeys::Q, IE_Pressed, this, &UPMWandComponent::OnToggleWand);
+	// RMB is shared with the right hand; don't consume it so the arms still see it when the wand is away.
+	WandInput->BindKey(EKeys::RightMouseButton, IE_Pressed, this, &UPMWandComponent::OnCastPressed).bConsumeInput = false;
+	WandInput->BindKey(EKeys::One, IE_Pressed, this, &UPMWandComponent::OnSelect1);
+	WandInput->BindKey(EKeys::Two, IE_Pressed, this, &UPMWandComponent::OnSelect2);
+	WandInput->BindKey(EKeys::Three, IE_Pressed, this, &UPMWandComponent::OnSelect3);
+	WandInput->BindKey(EKeys::Four, IE_Pressed, this, &UPMWandComponent::OnSelect4);
+	PC->PushInputComponent(WandInput);
+}
+
+void UPMWandComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	if (!BoundPC.IsValid())
+	{
+		TryBindInput();
+	}
+	Mana = FMath::Min(MaxMana, Mana + ManaRegenPerSecond * DeltaTime);
+	UpdateWandVisual();
+}
+
+void UPMWandComponent::Toast(const FString& Message) const
+{
+	if (UPMSpellSubsystem* Spells = GetWorld()->GetSubsystem<UPMSpellSubsystem>())
+	{
+		Spells->Toast(Message);
+	}
+}
+
+void UPMWandComponent::SetWandOut(bool bOut)
+{
+	bWandOut = bOut;
+	if (WandStick)
+	{
+		WandStick->SetHiddenInGame(!bOut);
+		WandTip->SetHiddenInGame(!bOut);
+	}
+}
+
+void UPMWandComponent::SelectSpell(EPMSpell Spell)
+{
+	Selected = Spell;
+	if (TipMaterial)
+	{
+		TipMaterial->SetVectorParameterValue(FPMObjectLibrary::ColorParameterName, FPMSpellDef::Get(Spell).Color);
+	}
+	if (!bWandOut)
+	{
+		SetWandOut(true); // Picking a spell draws the wand.
+	}
+}
+
+float UPMWandComponent::GetCooldownRemaining(EPMSpell Spell) const
+{
+	const int32 Index = static_cast<int32>(Spell);
+	return FMath::Max(0.f, static_cast<float>(LastCastTime[Index] + FPMSpellDef::Get(Spell).Cooldown - GetWorld()->GetTimeSeconds()));
+}
+
+bool UPMWandComponent::GetAim(FVector& OutTip, FVector& OutDirection, FVector& OutAimPoint) const
+{
+	const APlayerController* PC = BoundPC.Get();
+	const ACharacter* Character = Cast<ACharacter>(GetOwner());
+	if (!PC || !Character)
+	{
+		return false;
+	}
+
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	PC->GetPlayerViewPoint(ViewLocation, ViewRotation);
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMWandAim), false, GetOwner());
+	FHitResult Hit;
+	const FVector Far = ViewLocation + ViewRotation.Vector() * 6000.f;
+	OutAimPoint = GetWorld()->LineTraceSingleByChannel(Hit, ViewLocation, Far, ECC_Visibility, Params) ? FVector(Hit.ImpactPoint) : Far;
+
+	// The wand sits in the right hand and points at whatever the crosshair is on.
+	const FVector HandLocation = Character->GetMesh()->GetBoneLocation(PMWand::Hand);
+	const FVector WandDirection = (OutAimPoint - HandLocation).GetSafeNormal();
+	OutTip = HandLocation + WandDirection * PMWand::StickLength;
+	OutDirection = (OutAimPoint - OutTip).GetSafeNormal();
+	if (OutDirection.IsNearlyZero())
+	{
+		OutDirection = ViewRotation.Vector();
+	}
+	return true;
+}
+
+void UPMWandComponent::UpdateWandVisual()
+{
+	if (!bWandOut || !WandStick)
+	{
+		return;
+	}
+	FVector Tip, Direction, AimPoint;
+	if (!GetAim(Tip, Direction, AimPoint))
+	{
+		return;
+	}
+	const FVector Start = Tip - (AimPoint - Tip).GetSafeNormal() * PMWand::StickLength;
+	const FVector Axis = (Tip - Start).GetSafeNormal();
+	WandStick->SetWorldLocationAndRotation((Start + Tip) * 0.5f, FRotationMatrix::MakeFromZ(Axis).Rotator());
+	WandStick->SetWorldScale3D(FVector(0.025f, 0.025f, PMWand::StickLength / 100.f));
+	WandTip->SetWorldLocation(Tip);
+	WandTip->SetWorldScale3D(FVector(0.06f));
+}
+
+void UPMWandComponent::OnCastPressed()
+{
+	if (bWandOut)
+	{
+		CastSpell();
+	}
+}
+
+bool UPMWandComponent::CastSpell()
+{
+	if (!bWandOut)
+	{
+		return false;
+	}
+	// No wand-waving while typing in the Spellbook.
+	if (const UPMSpellcasterComponent* Book = GetOwner()->FindComponentByClass<UPMSpellcasterComponent>())
+	{
+		if (Book->IsSpellbookOpen())
+		{
+			return false;
+		}
+	}
+
+	const FPMSpellDef& Def = FPMSpellDef::Get(Selected);
+	if (GetCooldownRemaining(Selected) > 0.f)
+	{
+		return false;
+	}
+	if (Mana < Def.ManaCost)
+	{
+		Toast(FString::Printf(TEXT("Not enough mana for %s (%d / %d)."), *Def.Name, FMath::FloorToInt(Mana), FMath::RoundToInt(Def.ManaCost)));
+		return false;
+	}
+
+	FVector Tip, Direction, AimPoint;
+	if (!GetAim(Tip, Direction, AimPoint))
+	{
+		return false;
+	}
+
+	Mana -= Def.ManaCost;
+	LastCastTime[static_cast<int32>(Selected)] = GetWorld()->GetTimeSeconds();
+
+	switch (Selected)
+	{
+	case EPMSpell::Fireball:
+	case EPMSpell::Frost:
+	{
+		FActorSpawnParameters Params;
+		Params.Owner = GetOwner();
+		Params.Instigator = Cast<APawn>(GetOwner());
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		if (APMSpellProjectile* Projectile = GetWorld()->SpawnActor<APMSpellProjectile>(APMSpellProjectile::StaticClass(), Tip + Direction * 15.f, Direction.Rotation(), Params))
+		{
+			Projectile->Launch(Selected, GetOwner(), Direction);
+		}
+		break;
+	}
+	case EPMSpell::Gust:
+		CastGust(Tip, Direction);
+		break;
+	case EPMSpell::Tether:
+		CastTether(Tip, Direction, AimPoint);
+		break;
+	default:
+		break;
+	}
+	return true;
+}
+
+void UPMWandComponent::CastGust(const FVector& Tip, const FVector& Direction)
+{
+	APMSpellFX::SpawnCone(GetWorld(), Tip, Direction, GustRange * 0.6f, GustRange * 0.25f, FPMSpellDef::Get(EPMSpell::Gust).Color, 0.3f);
+
+	TArray<FOverlapResult> Overlaps;
+	FCollisionObjectQueryParams Objects;
+	Objects.AddObjectTypesToQuery(ECC_PhysicsBody);
+	Objects.AddObjectTypesToQuery(ECC_WorldDynamic);
+	Objects.AddObjectTypesToQuery(ECC_Pawn);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMGust), false, GetOwner());
+	GetWorld()->OverlapMultiByObjectType(Overlaps, Tip, FQuat::Identity, Objects, FCollisionShape::MakeSphere(GustRange), Params);
+
+	const float CosLimit = FMath::Cos(FMath::DegreesToRadians(GustAngle));
+	TSet<AActor*> Pushed;
+	for (const FOverlapResult& Overlap : Overlaps)
+	{
+		AActor* Actor = Overlap.GetActor();
+		if (!Actor || Pushed.Contains(Actor))
+		{
+			continue;
+		}
+		const FVector ToTarget = Actor->GetActorLocation() - Tip;
+		const float Distance = ToTarget.Size();
+		if (Distance < 1.f || FVector::DotProduct(ToTarget / Distance, Direction) < CosLimit)
+		{
+			continue; // Outside the cone.
+		}
+		const float Falloff = 1.f - FMath::Clamp(Distance / GustRange, 0.f, 1.f) * 0.7f;
+		const FVector Push = (Direction + FVector(0.f, 0.f, 0.15f)).GetSafeNormal();
+
+		if (ACharacter* Character = Cast<ACharacter>(Actor))
+		{
+			Pushed.Add(Actor);
+			Character->LaunchCharacter(Push * 1100.f * Falloff + FVector(0.f, 0.f, 250.f), true, true);
+			continue;
+		}
+
+		UPrimitiveComponent* Comp = Overlap.GetComponent();
+		APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Actor);
+		if (Spawned)
+		{
+			Comp = Spawned->GetBody();
+			Spawned->Extinguish(); // The wind blows small fires out.
+		}
+		if (Comp && Comp->IsSimulatingPhysics())
+		{
+			Pushed.Add(Actor);
+			const float SpeedChange = FMath::Clamp(60000.f / FMath::Max(Comp->GetMass(), 1.f), 50.f, 1300.f) * Falloff;
+			Comp->AddImpulse(Push * SpeedChange, NAME_None, /*bVelChange*/ true);
+		}
+	}
+}
+
+void UPMWandComponent::CastTether(const FVector& Tip, const FVector& Direction, const FVector& AimPoint)
+{
+	ACharacter* Self = Cast<ACharacter>(GetOwner());
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMTether), false, GetOwner());
+	FHitResult Hit;
+	const FVector End = Tip + Direction * TetherRange;
+	if (!GetWorld()->LineTraceSingleByChannel(Hit, Tip, End, ECC_Visibility, Params))
+	{
+		APMSpellFX::SpawnBeam(GetWorld(), Tip, End, FPMSpellDef::Get(EPMSpell::Tether).Color, 0.2f);
+		return; // Missed.
+	}
+	APMSpellFX::SpawnBeam(GetWorld(), Tip, Hit.ImpactPoint, FPMSpellDef::Get(EPMSpell::Tether).Color, 0.35f);
+
+	UPrimitiveComponent* Target = Hit.GetComponent();
+	if (APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Hit.GetActor()))
+	{
+		Target = Spawned->GetBody();
+	}
+
+	// Light things come to you; heavy things and walls pull you to them instead.
+	const bool bMovable = Target && Target->IsSimulatingPhysics() && Target->GetMass() < 200.f;
+	if (bMovable)
+	{
+		const FVector Pull = (Tip - Hit.ImpactPoint).GetSafeNormal();
+		const float SpeedChange = FMath::Clamp(45000.f / FMath::Max(Target->GetMass(), 1.f), 200.f, 1500.f);
+		Target->AddImpulse(Pull * SpeedChange + FVector(0.f, 0.f, 250.f), NAME_None, /*bVelChange*/ true);
+	}
+	else if (Self)
+	{
+		const FVector ToPoint = Hit.ImpactPoint - Self->GetActorLocation();
+		Self->LaunchCharacter(ToPoint.GetSafeNormal() * FMath::Clamp(ToPoint.Size() * 1.4f, 600.f, 1600.f) + FVector(0.f, 0.f, 350.f), true, true);
+	}
+}
+
+// --- Console commands for testing ----------------------------------------------------------------
+
+namespace PMWandConsole
+{
+	UPMWandComponent* LocalWand(UWorld* World)
+	{
+		APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+		return (PC && PC->GetPawn()) ? PC->GetPawn()->FindComponentByClass<UPMWandComponent>() : nullptr;
+	}
+
+	static FAutoConsoleCommandWithWorldAndArgs Wand(TEXT("pm.Wand"), TEXT("pm.Wand [1|0] - draw or put away the wand."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			if (UPMWandComponent* W = LocalWand(World))
+			{
+				W->SetWandOut(Args.Num() > 0 ? FCString::Atoi(*Args[0]) != 0 : !W->IsWandOut());
+			}
+		}));
+
+	static FAutoConsoleCommandWithWorldAndArgs Spell(TEXT("pm.Spell"), TEXT("pm.Spell <1-4> - select a wand spell and cast it at the crosshair."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+		{
+			if (UPMWandComponent* W = LocalWand(World))
+			{
+				const int32 Index = Args.Num() > 0 ? FMath::Clamp(FCString::Atoi(*Args[0]) - 1, 0, 3) : 0;
+				W->SelectSpell(static_cast<EPMSpell>(Index));
+				W->CastSpell();
+			}
+		}));
+}
