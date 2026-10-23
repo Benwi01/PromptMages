@@ -283,9 +283,17 @@ void UPMActiveRagdollComponent::Toast(const FString& Message) const
 
 void UPMActiveRagdollComponent::OnThrowPressed()
 {
-	if (!IsSpellbookOpen())
+	if (IsSpellbookOpen())
+	{
+		return;
+	}
+	if (Held.IsValid())
 	{
 		Throw();
+	}
+	else
+	{
+		Punch();
 	}
 }
 
@@ -335,6 +343,7 @@ void UPMActiveRagdollComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	UpdateHeld(DeltaTime);
 	UpdateMoveSpeed();
 	UpdateInteractPrompt();
+	UpdatePunch(DeltaTime);
 	UpdateArms();
 	UpdateCamera(DeltaTime);
 }
@@ -665,6 +674,88 @@ void UPMActiveRagdollComponent::UpdateInteractPrompt()
 	}
 }
 
+// --- Punching ------------------------------------------------------------------------------------
+
+void UPMActiveRagdollComponent::Punch()
+{
+	if (!bBodyReady || IsSpellbookOpen() || Held.IsValid())
+	{
+		return;
+	}
+	if (PunchTime >= 0.f && PunchTime < PunchCooldown)
+	{
+		return; // Still recovering from the last one.
+	}
+	// Alternate fists; with the wand out the right hand is busy, so it's all left.
+	PunchArm = IsWandOut() ? 0 : 1 - PunchArm;
+	PunchTime = 0.f;
+	bPunchLanded = false;
+}
+
+void UPMActiveRagdollComponent::UpdatePunch(float DeltaTime)
+{
+	if (PunchTime < 0.f)
+	{
+		return;
+	}
+	PunchTime += DeltaTime;
+	// The hit lands when the fist is most of the way out.
+	if (!bPunchLanded && PunchTime >= PunchDuration * 0.3f)
+	{
+		bPunchLanded = true;
+		PunchHit();
+	}
+	if (PunchTime >= PunchCooldown)
+	{
+		PunchTime = -1.f;
+	}
+}
+
+void UPMActiveRagdollComponent::PunchHit()
+{
+	const FVector Eye = GetEyeLocation();
+	const FVector Dir = GetViewRotation().Vector();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMPunch), false, GetOwner());
+	FHitResult Hit;
+	if (!GetWorld()->SweepSingleByChannel(Hit, Eye, Eye + Dir * PunchReach, FQuat::Identity, ECC_Visibility,
+		FCollisionShape::MakeSphere(18.f), Params))
+	{
+		return;
+	}
+
+	// Another mage (or anything that walks): shove them back and up a little.
+	if (ACharacter* Victim = Cast<ACharacter>(Hit.GetActor()))
+	{
+		const FVector Shove = Dir.GetSafeNormal2D() * PunchKnockback + FVector(0.f, 0.f, PunchKnockback * 0.35f);
+		Victim->LaunchCharacter(Shove, true, false);
+		UE_LOG(LogPromptMages, Verbose, TEXT("Punched %s"), *Victim->GetName());
+		return;
+	}
+
+	UPrimitiveComponent* Comp = Hit.GetComponent();
+	if (APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Hit.GetActor()))
+	{
+		if (Spawned->IsMystery())
+		{
+			Spawned->RevealMystery(); // Punching a Mystery Crate opens it too.
+			return;
+		}
+		Comp = Spawned->GetBody();
+	}
+	if (!Comp || !Comp->IsSimulatingPhysics())
+	{
+		return; // Punched a wall. Ouch.
+	}
+
+	// Light things fly, heavy things barely budge. Knock it mostly forward and a bit up, even when
+	// punching down at something, so it doesn't just get pressed into the floor.
+	const float Mass = FMath::Max(Comp->GetMass(), 0.1f);
+	const float Speed = PunchSpeed * FMath::Min(1.f, PunchFullSpeedKg / Mass);
+	const FVector Push = (Dir.GetSafeNormal2D() + FVector(0.f, 0.f, FMath::Max(Dir.Z, 0.f) + 0.35f)).GetSafeNormal();
+	Comp->AddImpulseAtLocation(Push * Speed * Mass, Hit.ImpactPoint);
+	UE_LOG(LogPromptMages, Verbose, TEXT("Punched %s (%.0f kg) at %.0f cm/s"), *PMRagdoll::NameOf(Comp), Mass, Speed);
+}
+
 // --- Hands ---------------------------------------------------------------------------------------
 
 void UPMActiveRagdollComponent::PlaceHand(FPMArmState& Arm, bool bPlace, const FVector& Target)
@@ -713,8 +804,21 @@ void UPMActiveRagdollComponent::UpdateArms()
 	const bool bWand = IsWandOut();
 	const UPrimitiveComponent* Target = Held.Get();
 
-	for (FPMArmState& Arm : Arms)
+	for (int32 i = 0; i < 2; ++i)
 	{
+		FPMArmState& Arm = Arms[i];
+
+		// Punching: the fist shoots out from the guard to the crosshair and comes back.
+		if (IsPunching() && i == PunchArm)
+		{
+			const float T = PunchTime / PunchDuration;
+			const float Out = T < 0.4f ? FMath::InterpEaseOut(0.f, 1.f, T / 0.4f, 2.f) : 1.f - (T - 0.4f) / 0.6f;
+			const FVector Guard = Eye + Forward * 35.f + Right * Arm.Side * 18.f - Up * 16.f;
+			const FVector Strike = Eye + Forward * PunchReach + Right * Arm.Side * 4.f - Up * 6.f;
+			PlaceHand(Arm, true, FMath::Lerp(Guard, Strike, Out));
+			continue;
+		}
+
 		// The wand hand holds the wand out toward the crosshair.
 		if (bWand && Arm.Side > 0.f)
 		{
@@ -817,6 +921,15 @@ namespace PMRagdollConsole
 			if (UPMActiveRagdollComponent* Body = LocalBody(World))
 			{
 				Body->Throw();
+			}
+		}));
+
+	static FAutoConsoleCommandWithWorld PunchCmd(TEXT("pm.Punch"), TEXT("pm.Punch - punch, same as LMB with empty hands."),
+		FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
+		{
+			if (UPMActiveRagdollComponent* Body = LocalBody(World))
+			{
+				Body->Punch();
 			}
 		}));
 

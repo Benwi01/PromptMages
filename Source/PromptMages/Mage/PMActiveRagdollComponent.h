@@ -39,6 +39,7 @@ struct FPMArmState
  * Arms are placed for you: in first person both hands stay up in view; holding something, they go to it;
  * in third person (and for how others see you) they hang relaxed. The wand hand holds the wand out.
  *
+ * LMB punches (alternating fists): it knocks objects away and shoves other characters.
  * E picks up what the crosshair is on: light things (up to CarryMaxKg) are carried in front of you,
  * heavier ones (up to DragMaxKg) are dragged and slow you down. E again drops, LMB throws.
  */
@@ -64,6 +65,9 @@ public:
 	void Interact();
 	/** LMB while holding: throw it. */
 	void Throw();
+	/** LMB with empty hands: punch with the next fist (left/right alternate; left only while the wand is out). */
+	void Punch();
+	bool IsPunching() const { return PunchTime >= 0.f && PunchTime < PunchDuration; }
 
 	// --- Body ---
 
@@ -152,6 +156,32 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
 	float HeaviestDragSpeedScale = 0.35f;
 
+	// --- Punch ---
+
+	/** How far (cm from the eyes) a punch connects. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	float PunchReach = 140.f;
+
+	/** Seconds for the fist to go out and come back. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	float PunchDuration = 0.25f;
+
+	/** Seconds between punches. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	float PunchCooldown = 0.35f;
+
+	/** Speed (cm/s) a punch gives a light object; heavier ones get less. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	float PunchSpeed = 900.f;
+
+	/** Objects up to this mass get the full PunchSpeed. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	float PunchFullSpeedKg = 20.f;
+
+	/** How hard a punch shoves another character (cm/s). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	float PunchKnockback = 550.f;
+
 	// --- Crouch ---
 
 	/** How far (cm) the hips drop while crouching (Ctrl). The relaxed legs fold under them. */
@@ -215,6 +245,9 @@ private:
 	void ApplyBodyDrives();
 	void ApplyArmDrive(const FPMArmState& Arm);
 	void UpdateHeld(float DeltaTime);
+	void UpdatePunch(float DeltaTime);
+	/** The moment the fist lands: knock back whatever is in front. */
+	void PunchHit();
 	void UpdateMoveSpeed();
 	void UpdateInteractPrompt();
 	void UpdateArms();
@@ -256,6 +289,11 @@ private:
 	float DragDistance = 100.f;
 	float DragHeight = 50.f;
 	FString InteractPrompt;
+
+	/** Seconds since the current punch started (-1 = not punching), which fist, and whether it has landed. */
+	float PunchTime = -1.f;
+	int32 PunchArm = 0;
+	bool bPunchLanded = false;
 
 	bool bBodyReady = false;
 	bool bSprinting = false;
