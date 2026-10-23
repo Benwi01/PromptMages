@@ -113,9 +113,13 @@ public:
 
 	// --- Hands ---
 
-	/** First-person hands-up pose: hand position from the eyes (forward, sideways, up), cm. */
+	/** Guard pose (fists up after punching): where each hand goes, from the eyes in cm. X = forward, Y = out to the side, Z = up. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Hands")
-	FVector FirstPersonHandOffset = FVector(55.f, 22.f, -20.f);
+	FVector GuardHandOffset = FVector(55.f, 22.f, -20.f);
+
+	/** Where the right hand holds the wand, from the eyes in cm. X = forward, Y = right, Z = up. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Hands")
+	FVector WandHandOffset = FVector(55.f, 16.f, -12.f);
 
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Hands")
 	float HandStiffness = 6000.f;

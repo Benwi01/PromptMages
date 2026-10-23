@@ -19,7 +19,6 @@
 namespace PMWand
 {
 	const FName Hand(TEXT("hand_r"));
-	constexpr float StickLength = 34.f;
 }
 
 UPMWandComponent::UPMWandComponent()
@@ -172,9 +171,10 @@ bool UPMWandComponent::GetAim(FVector& OutTip, FVector& OutDirection, FVector& O
 	OutAimPoint = GetWorld()->LineTraceSingleByChannel(Hit, ViewLocation, Far, ECC_Visibility, Params) ? FVector(Hit.ImpactPoint) : Far;
 
 	// The wand sits in the right hand and points at whatever the crosshair is on.
-	const FVector HandLocation = Character->GetMesh()->GetBoneLocation(PMWand::Hand);
+	const FVector HandLocation = Character->GetMesh()->GetBoneLocation(PMWand::Hand)
+		+ ViewRotation.RotateVector(WandGripOffset);
 	const FVector WandDirection = (OutAimPoint - HandLocation).GetSafeNormal();
-	OutTip = HandLocation + WandDirection * PMWand::StickLength;
+	OutTip = HandLocation + WandDirection * WandLength;
 	OutDirection = (OutAimPoint - OutTip).GetSafeNormal();
 	if (OutDirection.IsNearlyZero())
 	{
@@ -194,10 +194,10 @@ void UPMWandComponent::UpdateWandVisual()
 	{
 		return;
 	}
-	const FVector Start = Tip - (AimPoint - Tip).GetSafeNormal() * PMWand::StickLength;
+	const FVector Start = Tip - (AimPoint - Tip).GetSafeNormal() * WandLength;
 	const FVector Axis = (Tip - Start).GetSafeNormal();
 	WandStick->SetWorldLocationAndRotation((Start + Tip) * 0.5f, FRotationMatrix::MakeFromZ(Axis).Rotator());
-	WandStick->SetWorldScale3D(FVector(0.025f, 0.025f, PMWand::StickLength / 100.f));
+	WandStick->SetWorldScale3D(FVector(WandThickness / 100.f, WandThickness / 100.f, WandLength / 100.f));
 	WandTip->SetWorldLocation(Tip);
 	WandTip->SetWorldScale3D(FVector(0.06f));
 }

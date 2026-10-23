@@ -271,6 +271,9 @@ void UPMVisualBodyComponent::BuildLinks()
 
 void UPMVisualBodyComponent::BuildFingerCurls()
 {
+	BuiltFingerBend = FingerBend;
+	BuiltThumbTarget = ThumbTarget;
+	BuiltThumbBend = ThumbBend;
 	const FReferenceSkeleton& DstRef = Visual->GetSkinnedAsset()->GetRefSkeleton();
 	Curls.Reset();
 	CurlOfBone.Init(INDEX_NONE, DstRef.GetNum());
@@ -311,15 +314,16 @@ void UPMVisualBodyComponent::BuildFingerCurls()
 
 		// Fingers: turning about Along x Palm swings them toward the palm. Degrees per joint, counted from the knuckle.
 		const FVector FingerAxis = FVector::CrossProduct(Along, Palm).GetSafeNormal();
-		const float FingerBend[3] = { 80.f, 175.f, 235.f };
+		const float FingerTotal[3] = { FingerBend.X, FingerBend.X + FingerBend.Y, FingerBend.X + FingerBend.Y + FingerBend.Z };
 
 		// Thumb: swing it across the front of the curled index and middle fingers, then wrap the tip a little.
 		const FVector ThumbDir = (Pos(Thumb2) - Pos(Thumb1)).GetSafeNormal();
-		const FVector FingerFront = (Pos(Index1) + Pos(Middle1)) * 0.5f + Palm * 3.f - Along * 1.f;
+		const FVector FingerFront = (Pos(Index1) + Pos(Middle1)) * 0.5f + Palm * (3.f + ThumbTarget.X)
+			+ Along * (ThumbTarget.Y - 1.f) + Across * ThumbTarget.Z;
 		const FVector ThumbAim = (FingerFront - Pos(Thumb1)).GetSafeNormal();
 		const FQuat ThumbSwing = FQuat::FindBetweenNormals(ThumbDir, ThumbAim);
 		const FVector ThumbWrapAxis = FVector::CrossProduct(ThumbAim, Palm).GetSafeNormal();
-		const FQuat ThumbTurns[3] = { ThumbSwing, Bend(ThumbWrapAxis, 20.f) * ThumbSwing, Bend(ThumbWrapAxis, 45.f) * ThumbSwing };
+		const FQuat ThumbTurns[3] = { ThumbSwing, Bend(ThumbWrapAxis, ThumbBend.X) * ThumbSwing, Bend(ThumbWrapAxis, ThumbBend.Y) * ThumbSwing };
 
 		for (const TCHAR* Finger : { TEXT("index"), TEXT("middle"), TEXT("ring"), TEXT("pinky"), TEXT("thumb") })
 		{
@@ -333,7 +337,7 @@ void UPMVisualBodyComponent::BuildFingerCurls()
 				}
 				FFingerCurl& Curl = Curls.AddDefaulted_GetRef();
 				Curl.Hand = Hand;
-				Curl.TurnInHand = InHand(bThumb ? ThumbTurns[Joint - 1] : Bend(FingerAxis, FingerBend[Joint - 1]));
+				Curl.TurnInHand = InHand(bThumb ? ThumbTurns[Joint - 1] : Bend(FingerAxis, FingerTotal[Joint - 1]));
 				CurlOfBone[Index] = Curls.Num() - 1;
 			}
 		}
@@ -404,6 +408,12 @@ void UPMVisualBodyComponent::CopyPose()
 	const int32 HeadIdx = DstRef.FindBoneIndex(HeadBone);
 	const int32 NeckIdx = HeadIdx != INDEX_NONE ? DstRef.GetParentIndex(HeadIdx) : INDEX_NONE;
 	const float MaxBend = FMath::DegreesToRadians(PMVisual::CVarMaxHeadBend.GetValueOnGameThread());
+
+	// Fist settings changed in the Details panel (also while playing): rebuild the finger turns.
+	if (FingerBend != BuiltFingerBend || ThumbTarget != BuiltThumbTarget || ThumbBend != BuiltThumbBend)
+	{
+		BuildFingerCurls();
+	}
 
 	// Fists: ease each hand toward open/closed.
 	const float DeltaTime = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.016f;

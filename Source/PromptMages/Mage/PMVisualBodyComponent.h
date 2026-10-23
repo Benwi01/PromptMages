@@ -69,6 +69,21 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Body")
 	FRotator ModelRotation = FRotator::ZeroRotator;
 
+	/** Fist: how far each finger joint bends, in degrees. X = knuckle, Y = middle joint, Z = tip joint. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Fist")
+	FVector FingerBend = FVector(80.f, 95.f, 60.f);
+
+	/**
+	 * Fist: where the thumb points, moved from its default spot in front of the index and middle fingers (cm).
+	 * X = out from the palm, Y = toward the fingertips, Z = toward the index finger (negative = toward the pinky).
+	 */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Fist")
+	FVector ThumbTarget = FVector::ZeroVector;
+
+	/** Fist: extra bend of the thumb's middle joint (X) and tip joint (Y), in degrees. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Fist")
+	FVector2D ThumbBend = FVector2D(20.f, 45.f);
+
 	/** Costume pieces attached to the body (the mage outfit). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Costume")
 	TArray<FPMCostumePart> Costume;
@@ -130,6 +145,10 @@ private:
 	int32 HandBones[2] = { INDEX_NONE, INDEX_NONE };
 	float Fist[2] = { 0.f, 0.f };
 	float FistTarget[2] = { 0.f, 0.f };
+	/** The fist settings the curls were last built with; changing them (even while playing) rebuilds. */
+	FVector BuiltFingerBend = FVector::ZeroVector;
+	FVector BuiltThumbTarget = FVector::ZeroVector;
+	FVector2D BuiltThumbBend = FVector2D::ZeroVector;
 
 	int32 SrcPelvis = INDEX_NONE;
 	int32 DstHip = INDEX_NONE;

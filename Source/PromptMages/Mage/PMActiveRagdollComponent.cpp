@@ -839,7 +839,7 @@ void UPMActiveRagdollComponent::UpdateArms()
 		// The wand hand holds the wand out toward the crosshair.
 		if (bWand && Arm.Side > 0.f)
 		{
-			PlaceHand(Arm, true, Eye + Forward * 55.f + Right * 16.f - Up * 12.f);
+			PlaceHand(Arm, true, Eye + Forward * WandHandOffset.X + Right * WandHandOffset.Y + Up * WandHandOffset.Z);
 			SetFist(i, true); // Gripping the wand.
 			continue;
 		}
@@ -856,7 +856,7 @@ void UPMActiveRagdollComponent::UpdateArms()
 		// Just been fighting or handling things: fists up in a guard. Otherwise the arms hang relaxed.
 		if (bGuardUp)
 		{
-			const FVector& O = FirstPersonHandOffset;
+			const FVector& O = GuardHandOffset;
 			PlaceHand(Arm, true, Eye + Forward * O.X + Right * Arm.Side * O.Y + Up * O.Z);
 			SetFist(i, true);
 			continue;

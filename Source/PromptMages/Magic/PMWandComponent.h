@@ -38,6 +38,18 @@ public:
 	/** Casts the selected spell from the wand tip toward the crosshair. */
 	bool CastSpell();
 
+	/** Wand length, cm. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
+	float WandLength = 34.f;
+
+	/** Wand thickness, cm. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
+	float WandThickness = 2.5f;
+
+	/** Where the wand's grip end sits, moved from the hand in cm. X = forward, Y = right, Z = up (as you look). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
+	FVector WandGripOffset = FVector::ZeroVector;
+
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand")
 	float MaxMana = 100.f;
 
