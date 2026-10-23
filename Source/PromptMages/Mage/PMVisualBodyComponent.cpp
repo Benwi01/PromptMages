@@ -11,6 +11,9 @@
 
 namespace PMVisual
 {
+	TAutoConsoleVariable<int32> CVarShowPhysicsBody(TEXT("pm.ShowPhysicsBody"), 0,
+		TEXT("1 = also show the hidden physics mannequin that drives the visual body (debug)."));
+
 	/** Component-space reference pose of every bone. */
 	void ComponentRefPose(const FReferenceSkeleton& Ref, TArray<FTransform>& Out)
 	{
@@ -140,6 +143,44 @@ void UPMVisualBodyComponent::BuildLinks()
 		}
 	}
 
+	// Calibrate: the two skeletons' reference poses aren't the same shape (spine curve, shoulder angle, neck tilt).
+	// Turn each visual bone's reference rotation so it points the way its mannequin partner points, measured
+	// toward its main child. Then the copied pose matches the mannequin's actual shape, not just its movement.
+	const FQuat ModelToMannequin = FQuat(ModelRotation).Inverse();
+	for (int32 i = 0; i < DstRef.GetNum(); ++i)
+	{
+		const FBoneLink& Link = Links[i];
+		if (Link.Src == INDEX_NONE)
+		{
+			continue;
+		}
+		// Main child: prefer the spine / middle finger, otherwise the first mapped child.
+		int32 Child = INDEX_NONE;
+		for (int32 j = i + 1; j < DstRef.GetNum(); ++j)
+		{
+			if (DstRef.GetParentIndex(j) != i || Links[j].Src == INDEX_NONE)
+			{
+				continue;
+			}
+			const FString ChildName = DstRef.GetBoneName(j).ToString().ToLower();
+			if (Child == INDEX_NONE || ChildName.Contains(TEXT("spine")) || ChildName.Contains(TEXT("middle")) || ChildName.Contains(TEXT("neck")) || ChildName.Contains(TEXT("head")))
+			{
+				Child = j;
+			}
+		}
+		if (Child == INDEX_NONE)
+		{
+			continue; // Tips (head, toes, last finger joints) keep their own reference orientation.
+		}
+		const FVector DstDir = (DstRefComponent[Child].GetLocation() - DstRefComponent[i].GetLocation()).GetSafeNormal();
+		const FVector SrcDir = ModelToMannequin.RotateVector(
+			SrcRefComponent[Links[Child].Src].GetLocation() - SrcRefComponent[Link.Src].GetLocation()).GetSafeNormal();
+		if (!DstDir.IsNearlyZero() && !SrcDir.IsNearlyZero())
+		{
+			Links[i].DstRefRotation = (FQuat::FindBetweenNormals(DstDir, SrcDir) * Link.DstRefRotation).GetNormalized();
+		}
+	}
+
 	SrcPelvis = SrcRef.FindBoneIndex(TEXT("pelvis"));
 	DstHip = INDEX_NONE;
 	for (int32 i = 0; i < DstRef.GetNum(); ++i)
@@ -159,6 +200,17 @@ void UPMVisualBodyComponent::BuildLinks()
 void UPMVisualBodyComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	// pm.ShowPhysicsBody 1: show the hidden physics mannequin too, to compare poses.
+	if (Source)
+	{
+		static IConsoleVariable* ShowPhysics = IConsoleManager::Get().FindConsoleVariable(TEXT("pm.ShowPhysicsBody"));
+		const bool bShow = ShowPhysics && ShowPhysics->GetInt() != 0;
+		if (Source->bHiddenInGame == bShow)
+		{
+			Source->SetHiddenInGame(!bShow);
+		}
+	}
 
 	// Show our own head again in third person (pm.ThirdPerson).
 	if (Visual && Source)
@@ -239,4 +291,24 @@ void UPMVisualBodyComponent::CopyPose()
 		Local[i] = Parent == INDEX_NONE ? TargetComponent[i] : TargetComponent[i].GetRelativeTransform(TargetComponent[Parent]);
 	}
 	Visual->RefreshBoneTransforms();
+
+	// Debug: how far each visual bone sits from the mannequin bone it copies (world cm).
+	if (GFrameCounter % 120 == 0 && UE_LOG_ACTIVE(LogPromptMages, Verbose))
+	{
+		const FTransform DstWorld = Visual->GetComponentTransform();
+		const FTransform SrcWorld = Source->GetComponentTransform();
+		const FReferenceSkeleton& SrcRef = Source->GetSkinnedAsset()->GetRefSkeleton();
+		FString Line;
+		for (const FBoneLink& Link : Links)
+		{
+			if (Link.Src == INDEX_NONE || DstRef.GetBoneName(Link.Dst).ToString().Contains(TEXT("_0")))
+			{
+				continue; // Skip fingers to keep the line short.
+			}
+			const FVector D = DstWorld.TransformPosition(TargetComponent[Link.Dst].GetLocation());
+			const FVector S = SrcWorld.TransformPosition(SrcPose[Link.Src].GetLocation());
+			Line += FString::Printf(TEXT("%s=%.0f "), *SrcRef.GetBoneName(Link.Src).ToString(), FVector::Dist(D, S));
+		}
+		UE_LOG(LogPromptMages, Verbose, TEXT("Visual body offsets (cm): %s"), *Line);
+	}
 }
