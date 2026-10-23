@@ -21,6 +21,9 @@
 
 namespace PMRagdoll
 {
+	TAutoConsoleVariable<float> CVarThirdPerson(TEXT("pm.ThirdPerson"), 0.f,
+		TEXT("Camera distance behind the local player (0 = first person). Shows your own head."));
+
 	const FName Pelvis(TEXT("pelvis"));
 	const FName Spine(TEXT("spine_02"));
 	const FName Head(TEXT("head"));
@@ -873,7 +876,15 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 	const FVector Forward = FRotator(0.f, Character->GetControlRotation().Yaw, 0.f).Vector();
 	// While bending over, ride the head further down so you look over your hands, not at your own back.
 	const float Follow = FMath::Lerp(CameraHeadFollow, 0.8f, Stoop);
-	Camera->SetWorldLocation(FMath::Lerp(Eye, SmoothedHead, Follow) + Forward * CameraForwardOffset);
+	FVector CameraLocation = FMath::Lerp(Eye, SmoothedHead, Follow) + Forward * CameraForwardOffset;
+
+	// pm.ThirdPerson <distance>: look at your own mage from behind (debugging and fun).
+	const float ThirdPerson = PMRagdoll::CVarThirdPerson.GetValueOnGameThread();
+	if (ThirdPerson > 0.f)
+	{
+		CameraLocation = Eye - Character->GetControlRotation().Vector() * ThirdPerson + FVector(0.f, 0.f, 20.f);
+	}
+	Camera->SetWorldLocation(CameraLocation);
 }
 
 // --- Console commands for testing ----------------------------------------------------------------

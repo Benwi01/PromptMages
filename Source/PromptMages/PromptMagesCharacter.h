@@ -43,6 +43,10 @@ class APromptMagesCharacter : public ACharacter
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	class UPMWandComponent* Wand;
 
+	/** Prompt-Mages: the low-poly model players see; copies the (hidden) physics mannequin's pose */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	class UPMVisualBodyComponent* VisualBody;
+
 protected:
 
 	/** Jump Input Action */
