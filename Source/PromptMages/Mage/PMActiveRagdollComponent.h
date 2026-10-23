@@ -119,7 +119,7 @@ public:
 
 	/** Where the right hand holds the wand, from the eyes in cm. X = forward, Y = right, Z = up. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Hands")
-	FVector WandHandOffset = FVector(55.f, 16.f, -12.f);
+	FVector WandHandOffset = FVector(48.f, 18.f, -20.f);
 
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Hands")
 	float HandStiffness = 6000.f;

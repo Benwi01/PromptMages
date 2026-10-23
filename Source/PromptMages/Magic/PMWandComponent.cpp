@@ -10,6 +10,8 @@
 #include "Components/InputComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "PMVisualBodyComponent.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
@@ -24,7 +26,8 @@ namespace PMWand
 UPMWandComponent::UPMWandComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
-	PrimaryComponentTick.TickGroup = TG_PostPhysics;
+	// After the visible body is posed, so the wand sits exactly in this frame's fist.
+	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
 }
 
 void UPMWandComponent::BeginPlay()
@@ -32,34 +35,48 @@ void UPMWandComponent::BeginPlay()
 	Super::BeginPlay();
 	Mana = MaxMana;
 
-	// A plain stick with a glowing tip that takes the selected spell's colour.
-	auto MakePart = [this](EPMShape Shape, const FLinearColor& Color, UMaterialInstanceDynamic** OutMID)
+	// The wand model (SourceArt/MannequinDemake/make_wand.py), modelled along +Z with the grip at the origin.
+	WandRoot = NewObject<USceneComponent>(GetOwner(), TEXT("PMWandRoot"));
+	WandRoot->SetUsingAbsoluteLocation(true);
+	WandRoot->SetUsingAbsoluteRotation(true);
+	WandRoot->SetUsingAbsoluteScale(true);
+	WandRoot->SetupAttachment(GetOwner()->GetRootComponent());
+	WandRoot->RegisterComponent();
+	auto AddPart = [this](const TCHAR* Asset) -> UStaticMeshComponent*
 	{
-		UStaticMeshComponent* Part = NewObject<UStaticMeshComponent>(GetOwner());
-		Part->SetStaticMesh(FPMObjectLibrary::GetShapeMesh(Shape));
-		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		Part->SetCastShadow(false);
-		Part->SetUsingAbsoluteLocation(true);
-		Part->SetUsingAbsoluteRotation(true);
-		Part->SetUsingAbsoluteScale(true);
-		Part->SetHiddenInGame(true);
-		if (UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(FPMObjectLibrary::GetShapeMaterial(), Part))
+		UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *FString::Printf(TEXT("/Game/PromptMages/Wand/%s.%s"), Asset, Asset));
+		if (!Mesh)
 		{
-			MID->SetVectorParameterValue(FPMObjectLibrary::ColorParameterName, Color);
-			Part->SetMaterial(0, MID);
-			if (OutMID)
-			{
-				*OutMID = MID;
-			}
+			UE_LOG(LogTemp, Warning, TEXT("Wand: missing %s (run make_wand.py)."), Asset);
+			return nullptr;
 		}
-		Part->SetupAttachment(GetOwner()->GetRootComponent());
+		UStaticMeshComponent* Part = NewObject<UStaticMeshComponent>(GetOwner());
+		Part->SetStaticMesh(Mesh);
+		Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Part->SetupAttachment(WandRoot);
 		Part->RegisterComponent();
+		WandParts.Add(Part);
 		return Part;
 	};
-	WandStick = MakePart(EPMShape::Cylinder, FLinearColor(0.3f, 0.17f, 0.07f), nullptr);
-	UMaterialInstanceDynamic* TipMID = nullptr;
-	WandTip = MakePart(EPMShape::Sphere, FPMSpellDef::Get(Selected).Color, &TipMID);
-	TipMaterial = TipMID;
+	AddPart(TEXT("SM_Wand_Grip"));
+	AddPart(TEXT("SM_Wand_Shaft"));
+	AddPart(TEXT("SM_Wand_Rings"));
+	// The crystal glows in the selected spell's colour.
+	if (UStaticMeshComponent* Crystal = AddPart(TEXT("SM_Wand_Crystal")))
+	{
+		TipMaterial = Crystal->CreateDynamicMaterialInstance(0);
+		if (TipMaterial)
+		{
+			TipMaterial->SetVectorParameterValue(FPMObjectLibrary::ColorParameterName, FPMSpellDef::Get(Selected).Color);
+		}
+	}
+	WandRoot->SetVisibility(false, true);
+
+	// Tick after the visible body so the wand follows this frame's hand.
+	if (UPMVisualBodyComponent* VisualBody = GetOwner()->FindComponentByClass<UPMVisualBodyComponent>())
+	{
+		AddTickPrerequisiteComponent(VisualBody);
+	}
 
 	TryBindInput();
 }
@@ -126,10 +143,16 @@ void UPMWandComponent::Toast(const FString& Message) const
 void UPMWandComponent::SetWandOut(bool bOut)
 {
 	bWandOut = bOut;
-	if (WandStick)
+	if (WandRoot)
 	{
-		WandStick->SetHiddenInGame(!bOut);
-		WandTip->SetHiddenInGame(!bOut);
+		WandRoot->SetVisibility(bOut, true);
+	}
+	if (!bOut)
+	{
+		if (UPMVisualBodyComponent* VisualBody = GetOwner()->FindComponentByClass<UPMVisualBodyComponent>())
+		{
+			VisualBody->SetWandGrip(1, false, FVector::ForwardVector, FVector::RightVector);
+		}
 	}
 }
 
@@ -152,7 +175,7 @@ float UPMWandComponent::GetCooldownRemaining(EPMSpell Spell) const
 	return FMath::Max(0.f, static_cast<float>(LastCastTime[Index] + FPMSpellDef::Get(Spell).Cooldown - GetWorld()->GetTimeSeconds()));
 }
 
-bool UPMWandComponent::GetAim(FVector& OutTip, FVector& OutDirection, FVector& OutAimPoint) const
+bool UPMWandComponent::GetAim(FVector& OutTip, FVector& OutDirection, FVector& OutAimPoint, FVector* OutGrip, FRotator* OutView) const
 {
 	const APlayerController* PC = BoundPC.Get();
 	const ACharacter* Character = Cast<ACharacter>(GetOwner());
@@ -170,11 +193,24 @@ bool UPMWandComponent::GetAim(FVector& OutTip, FVector& OutDirection, FVector& O
 	const FVector Far = ViewLocation + ViewRotation.Vector() * 6000.f;
 	OutAimPoint = GetWorld()->LineTraceSingleByChannel(Hit, ViewLocation, Far, ECC_Visibility, Params) ? FVector(Hit.ImpactPoint) : Far;
 
-	// The wand sits in the right hand and points at whatever the crosshair is on.
-	const FVector HandLocation = Character->GetMesh()->GetBoneLocation(PMWand::Hand)
-		+ ViewRotation.RotateVector(WandGripOffset);
-	const FVector WandDirection = (OutAimPoint - HandLocation).GetSafeNormal();
-	OutTip = HandLocation + WandDirection * WandLength;
+	// The wand sits in the right fist and points at whatever the crosshair is on.
+	FVector Grip;
+	const UPMVisualBodyComponent* VisualBody = GetOwner()->FindComponentByClass<UPMVisualBodyComponent>();
+	if (!VisualBody || !VisualBody->GetGripPoint(1, Grip))
+	{
+		Grip = Character->GetMesh()->GetBoneLocation(PMWand::Hand);
+	}
+	Grip += ViewRotation.RotateVector(WandGripOffset);
+	const FVector WandDirection = (OutAimPoint - Grip).GetSafeNormal();
+	OutTip = Grip + WandDirection * WandLength;
+	if (OutGrip)
+	{
+		*OutGrip = Grip;
+	}
+	if (OutView)
+	{
+		*OutView = ViewRotation;
+	}
 	OutDirection = (OutAimPoint - OutTip).GetSafeNormal();
 	if (OutDirection.IsNearlyZero())
 	{
@@ -185,21 +221,28 @@ bool UPMWandComponent::GetAim(FVector& OutTip, FVector& OutDirection, FVector& O
 
 void UPMWandComponent::UpdateWandVisual()
 {
-	if (!bWandOut || !WandStick)
+	if (!bWandOut || !WandRoot)
 	{
 		return;
 	}
-	FVector Tip, Direction, AimPoint;
-	if (!GetAim(Tip, Direction, AimPoint))
+	FVector Tip, Direction, AimPoint, Grip;
+	FRotator View;
+	if (!GetAim(Tip, Direction, AimPoint, &Grip, &View))
 	{
 		return;
 	}
-	const FVector Start = Tip - (AimPoint - Tip).GetSafeNormal() * WandLength;
-	const FVector Axis = (Tip - Start).GetSafeNormal();
-	WandStick->SetWorldLocationAndRotation((Start + Tip) * 0.5f, FRotationMatrix::MakeFromZ(Axis).Rotator());
-	WandStick->SetWorldScale3D(FVector(WandThickness / 100.f, WandThickness / 100.f, WandLength / 100.f));
-	WandTip->SetWorldLocation(Tip);
-	WandTip->SetWorldScale3D(FVector(0.06f));
+	const FVector Along = (Tip - Grip).GetSafeNormal();
+	WandRoot->SetWorldLocationAndRotation(Grip, FRotationMatrix::MakeFromZ(Along).Rotator());
+	WandRoot->SetWorldScale3D(FVector(WandThickness / 2.f, WandThickness / 2.f, WandLength / 34.f));
+
+	// Turn the visible wrist so the wand runs across the fist: palm facing in (left) and a little down.
+	if (UPMVisualBodyComponent* VisualBody = GetOwner()->FindComponentByClass<UPMVisualBodyComponent>())
+	{
+		const FRotationMatrix Axes(View);
+		FVector Palm = -Axes.GetUnitAxis(EAxis::Y) - Axes.GetUnitAxis(EAxis::Z) * 0.35f;
+		Palm = (Palm - Along * FVector::DotProduct(Palm, Along)).GetSafeNormal();
+		VisualBody->SetWandGrip(1, true, Along, Palm);
+	}
 }
 
 void UPMWandComponent::OnCastPressed()

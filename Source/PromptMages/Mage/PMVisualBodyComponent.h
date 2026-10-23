@@ -84,11 +84,27 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Fist")
 	FVector2D ThumbBend = FVector2D(-32.3f, -26.5f);
 
+	/**
+	 * Wand grip: where the wand passes through the fist, moved from its default spot (cm).
+	 * X = out from the palm, Y = toward the fingers, Z = toward the index finger.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Grip")
+	FVector GripPointOffset = FVector::ZeroVector;
+
 	/** Costume pieces attached to the body (the mage outfit). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Costume")
 	TArray<FPMCostumePart> Costume;
 
 	UPoseableMeshComponent* GetVisual() const { return Visual; }
+
+	/**
+	 * Hold a wand in a hand (0 = left, 1 = right): turns the visible wrist so the wand runs across the fist along
+	 * WandDirection, with the palm facing PalmDirection (world space). Eases in and out.
+	 */
+	void SetWandGrip(int32 Hand, bool bOn, const FVector& WandDirection, const FVector& PalmDirection);
+
+	/** Where a wand passes through this hand's fist, in world space. False until the body is posed. */
+	bool GetGripPoint(int32 Hand, FVector& OutWorld) const;
 
 	/** Close (or open) a hand into a fist: 0 = left, 1 = right. Eases over about a tenth of a second. */
 	void SetFist(int32 Hand, bool bClosed) { if (Hand == 0 || Hand == 1) { FistTarget[Hand] = bClosed ? 1.f : 0.f; } }
@@ -149,6 +165,19 @@ private:
 	FVector BuiltFingerBend = FVector::ZeroVector;
 	FVector BuiltThumbTarget = FVector::ZeroVector;
 	FVector2D BuiltThumbBend = FVector2D::ZeroVector;
+	FVector BuiltGripPointOffset = FVector::ZeroVector;
+
+	/** Each hand's knuckle line (toward the index finger), palm normal and wand grip point, in the hand bone's space. */
+	bool bHasGripFrame[2] = { false, false };
+	FVector GripAcrossLocal[2];
+	FVector GripPalmLocal[2];
+	FVector GripPointLocal[2];
+	/** Wand grip requested this frame, eased in/out, and the wrist turn it caused (fingers turn along). */
+	bool bWandGrip[2] = { false, false };
+	FVector WandGripDir[2];
+	FVector WandGripPalm[2];
+	float GripBlend[2] = { 0.f, 0.f };
+	FQuat HandCorrection[2] = { FQuat::Identity, FQuat::Identity };
 
 	int32 SrcPelvis = INDEX_NONE;
 	int32 DstHip = INDEX_NONE;

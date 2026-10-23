@@ -9,6 +9,7 @@
 
 class APlayerController;
 class UInputComponent;
+class USceneComponent;
 class UStaticMeshComponent;
 class UMaterialInstanceDynamic;
 
@@ -42,11 +43,11 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
 	float WandLength = 34.f;
 
-	/** Wand thickness, cm. */
+	/** Wand thickness at the base of the shaft, cm. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
-	float WandThickness = 2.5f;
+	float WandThickness = 2.f;
 
-	/** Where the wand's grip end sits, moved from the hand in cm. X = forward, Y = right, Z = up (as you look). */
+	/** Moves the whole wand away from where the fist holds it, in cm. X = forward, Y = right, Z = up (as you look). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
 	FVector WandGripOffset = FVector::ZeroVector;
 
@@ -73,7 +74,8 @@ protected:
 private:
 	APlayerController* GetLocalPC() const;
 	void TryBindInput();
-	bool GetAim(FVector& OutTip, FVector& OutDirection, FVector& OutAimPoint) const;
+	/** Where the fist holds the wand, where its tip is, which way it points, what it points at, and the view. */
+	bool GetAim(FVector& OutTip, FVector& OutDirection, FVector& OutAimPoint, FVector* OutGrip = nullptr, FRotator* OutView = nullptr) const;
 	void UpdateWandVisual();
 	void Toast(const FString& Message) const;
 
@@ -90,11 +92,12 @@ private:
 	UPROPERTY()
 	TObjectPtr<UInputComponent> WandInput;
 
+	/** The wand model (grip, shaft, rings, crystal), placed with its grip in the right fist. */
 	UPROPERTY()
-	TObjectPtr<UStaticMeshComponent> WandStick;
+	TObjectPtr<USceneComponent> WandRoot;
 
 	UPROPERTY()
-	TObjectPtr<UStaticMeshComponent> WandTip;
+	TArray<TObjectPtr<UStaticMeshComponent>> WandParts;
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> TipMaterial;

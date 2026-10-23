@@ -274,6 +274,7 @@ void UPMVisualBodyComponent::BuildFingerCurls()
 	BuiltFingerBend = FingerBend;
 	BuiltThumbTarget = ThumbTarget;
 	BuiltThumbBend = ThumbBend;
+	BuiltGripPointOffset = GripPointOffset;
 	const FReferenceSkeleton& DstRef = Visual->GetSkinnedAsset()->GetRefSkeleton();
 	Curls.Reset();
 	CurlOfBone.Init(INDEX_NONE, DstRef.GetNum());
@@ -309,6 +310,15 @@ void UPMVisualBodyComponent::BuildFingerCurls()
 			Palm = -Palm;
 		}
 		const FQuat HandRest = DstRefComponent[HandBones[Hand]].GetRotation();
+
+		// Wand grip: the wand runs along the knuckle line, through the hollow of the curled fingers.
+		const FVector GripBind = Pos(Middle1) * 0.75f + Pos(HandBones[Hand]) * 0.25f + Palm * (2.5f + GripPointOffset.X)
+			+ Along * GripPointOffset.Y + Across * GripPointOffset.Z;
+		GripAcrossLocal[Hand] = HandRest.UnrotateVector(Across);
+		GripPalmLocal[Hand] = HandRest.UnrotateVector(Palm);
+		GripPointLocal[Hand] = HandRest.UnrotateVector(GripBind - Pos(HandBones[Hand]));
+		bHasGripFrame[Hand] = true;
+
 		auto InHand = [&](const FQuat& Turn) { return (HandRest.Inverse() * Turn * HandRest).GetNormalized(); };
 		auto Bend = [](const FVector& Axis, float Degrees) { return FQuat(Axis, FMath::DegreesToRadians(Degrees)); };
 
@@ -410,7 +420,8 @@ void UPMVisualBodyComponent::CopyPose()
 	const float MaxBend = FMath::DegreesToRadians(PMVisual::CVarMaxHeadBend.GetValueOnGameThread());
 
 	// Fist settings changed in the Details panel (also while playing): rebuild the finger turns.
-	if (FingerBend != BuiltFingerBend || ThumbTarget != BuiltThumbTarget || ThumbBend != BuiltThumbBend)
+	if (FingerBend != BuiltFingerBend || ThumbTarget != BuiltThumbTarget || ThumbBend != BuiltThumbBend
+		|| GripPointOffset != BuiltGripPointOffset)
 	{
 		BuildFingerCurls();
 	}
@@ -421,6 +432,12 @@ void UPMVisualBodyComponent::CopyPose()
 	{
 		Fist[Hand] = FMath::FInterpConstantTo(Fist[Hand], FistTarget[Hand], DeltaTime, 9.f);
 	}
+	for (int32 Hand = 0; Hand < 2; ++Hand)
+	{
+		GripBlend[Hand] = FMath::FInterpConstantTo(GripBlend[Hand], bWandGrip[Hand] ? 1.f : 0.f, DeltaTime, 8.f);
+		HandCorrection[Hand] = FQuat::Identity;
+	}
+
 	// Bend a finger joint toward the palm, about the hand's current knuckle axis (parents are posed first).
 	auto CurlFinger = [&](int32 i)
 	{
@@ -430,6 +447,11 @@ void UPMVisualBodyComponent::CopyPose()
 			return;
 		}
 		const FFingerCurl& Curl = Curls[CurlIndex];
+		// Fingers turn with a wrist that was turned to hold the wand.
+		if (!HandCorrection[Curl.Hand].Equals(FQuat::Identity))
+		{
+			TargetComponent[i].SetRotation((HandCorrection[Curl.Hand] * TargetComponent[i].GetRotation()).GetNormalized());
+		}
 		const float Amount = Fist[Curl.Hand];
 		if (Amount <= 0.f || !TargetComponent.IsValidIndex(HandBones[Curl.Hand]))
 		{
@@ -469,6 +491,22 @@ void UPMVisualBodyComponent::CopyPose()
 			if (Angle > MaxBend)
 			{
 				Rotation = (ParentNow * FQuat::Slerp(FQuat::Identity, Bend, MaxBend / Angle) * LocalRest).GetNormalized();
+			}
+		}
+
+		// Holding the wand: turn the wrist so the wand lies along the knuckle line with the palm facing in.
+		for (int32 Hand = 0; Hand < 2; ++Hand)
+		{
+			if (i == HandBones[Hand] && GripBlend[Hand] > 0.f && bHasGripFrame[Hand])
+			{
+				const FQuat ToComponent = Visual->GetComponentQuat().Inverse();
+				const FVector WantAcross = ToComponent.RotateVector(WandGripDir[Hand]);
+				const FVector WantPalm = ToComponent.RotateVector(WandGripPalm[Hand]);
+				const FQuat Want = FRotationMatrix::MakeFromXY(WantAcross, WantPalm).ToQuat()
+					* FRotationMatrix::MakeFromXY(GripAcrossLocal[Hand], GripPalmLocal[Hand]).ToQuat().Inverse();
+				const FQuat Turned = FQuat::Slerp(Rotation, Want, GripBlend[Hand]).GetNormalized();
+				HandCorrection[Hand] = (Turned * Rotation.Inverse()).GetNormalized();
+				Rotation = Turned;
 			}
 		}
 
@@ -518,4 +556,30 @@ void UPMVisualBodyComponent::CopyPose()
 		}
 		UE_LOG(LogPromptMages, Verbose, TEXT("Visual body offsets (cm): %s"), *Line);
 	}
+}
+
+void UPMVisualBodyComponent::SetWandGrip(int32 Hand, bool bOn, const FVector& WandDirection, const FVector& PalmDirection)
+{
+	if (Hand != 0 && Hand != 1)
+	{
+		return;
+	}
+	bWandGrip[Hand] = bOn;
+	if (bOn)
+	{
+		WandGripDir[Hand] = WandDirection.GetSafeNormal();
+		WandGripPalm[Hand] = PalmDirection.GetSafeNormal();
+	}
+}
+
+bool UPMVisualBodyComponent::GetGripPoint(int32 Hand, FVector& OutWorld) const
+{
+	if ((Hand != 0 && Hand != 1) || !Visual || !bHasGripFrame[Hand] || !TargetComponent.IsValidIndex(HandBones[Hand]))
+	{
+		return false;
+	}
+	// Position and rotation only: the imported bones carry a x100 scale that would blow the offset up.
+	const FTransform& HandNow = TargetComponent[HandBones[Hand]];
+	OutWorld = Visual->GetComponentTransform().TransformPosition(HandNow.GetLocation() + HandNow.GetRotation().RotateVector(GripPointLocal[Hand]));
+	return true;
 }
