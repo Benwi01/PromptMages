@@ -47,6 +47,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
 	float WandThickness = 2.f;
 
+	/**
+	 * Tilts the wand upward from the line to the crosshair, in degrees, so you see more of it in first person.
+	 * Spells still fly from the crystal straight to the crosshair.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
+	float WandTiltUp = 15.f;
+
 	/** Moves the whole wand away from where the fist holds it, in cm. X = forward, Y = right, Z = up (as you look). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
 	FVector WandGripOffset = FVector::ZeroVector;

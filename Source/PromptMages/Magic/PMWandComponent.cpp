@@ -201,7 +201,17 @@ bool UPMWandComponent::GetAim(FVector& OutTip, FVector& OutDirection, FVector& O
 		Grip = Character->GetMesh()->GetBoneLocation(PMWand::Hand);
 	}
 	Grip += ViewRotation.RotateVector(WandGripOffset);
-	const FVector WandDirection = (OutAimPoint - Grip).GetSafeNormal();
+	FVector WandDirection = (OutAimPoint - Grip).GetSafeNormal();
+	// Tip the wand up a little so it isn't seen end-on (the spell still goes from the tip to the crosshair).
+	const FVector ViewUp = FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Z);
+	const FVector TiltAxis = FVector::CrossProduct(WandDirection, ViewUp).GetSafeNormal();
+	if (!TiltAxis.IsNearlyZero())
+	{
+		// Whichever turn direction goes up (don't depend on the rotation sign convention).
+		const FVector A = WandDirection.RotateAngleAxis(WandTiltUp, TiltAxis);
+		const FVector B = WandDirection.RotateAngleAxis(-WandTiltUp, TiltAxis);
+		WandDirection = FVector::DotProduct(A, ViewUp) >= FVector::DotProduct(B, ViewUp) ? A : B;
+	}
 	OutTip = Grip + WandDirection * WandLength;
 	if (OutGrip)
 	{
