@@ -920,7 +920,9 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 		const float Orbit = PMRagdoll::CVarThirdPersonYaw.GetValueOnGameThread();
 		FRotator ViewRot = Character->GetControlRotation();
 		ViewRot.Yaw += Orbit;
-		CameraLocation = Eye - ViewRot.Vector() * ThirdPerson + FVector(0.f, 0.f, 20.f);
+		const FRotationMatrix ViewAxes(ViewRot);
+		CameraLocation = Eye - ViewRot.Vector() * ThirdPerson
+			+ ViewAxes.GetUnitAxis(EAxis::Y) * ThirdPersonOffset.X + FVector(0.f, 0.f, ThirdPersonOffset.Y);
 		Camera->bUsePawnControlRotation = FMath::IsNearlyZero(Orbit);
 		if (!Camera->bUsePawnControlRotation)
 		{

@@ -209,6 +209,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
 	float CameraHeadFollow = 0.15f;
 
+	/** Third person: camera offset from straight behind the mage, in cm. X = to the right, Y = up (over the shoulder). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
+	FVector2D ThirdPersonOffset = FVector2D(45.f, 20.f);
+
 	/** Field of view (degrees, horizontal). Wider shows more of your hands and what you carry. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
 	float FieldOfView = 100.f;
