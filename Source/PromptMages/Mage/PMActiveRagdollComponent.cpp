@@ -1,4 +1,4 @@
-// Prompt-Mages: the active-ragdoll body and two independent grabbing arms (GDD 2.1).
+// Prompt-Mages: the active-ragdoll body, its arms and E-to-pick-up (GDD 2.1).
 
 #include "PMActiveRagdollComponent.h"
 #include "PMSpawnedObject.h"
@@ -11,12 +11,9 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/InputComponent.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
-#include "PhysicsEngine/BodySetup.h"
-#include "PhysicsEngine/PhysicsConstraintComponent.h"
 #include "PhysicsEngine/PhysicsHandleComponent.h"
 
 namespace PMRagdoll
@@ -25,9 +22,10 @@ namespace PMRagdoll
 		TEXT("Camera distance behind the local player (0 = first person). Shows your own head."));
 	TAutoConsoleVariable<float> CVarThirdPersonYaw(TEXT("pm.ThirdPersonYaw"), 0.f,
 		TEXT("Orbit the third-person camera around the mage, in degrees (180 = front view)."));
-
-	TAutoConsoleVariable<float> CVarNeckDrive(TEXT("pm.NeckDrive"), 5.f,
+	TAutoConsoleVariable<float> CVarNeckDrive(TEXT("pm.NeckDrive"), 2.f,
 		TEXT("Neck and head motor strength, as a multiple of the spine's. Higher = the head stays up instead of drooping."));
+	TAutoConsoleVariable<float> CVarBodyStiffness(TEXT("pm.BodyStiffness"), 1.f,
+		TEXT("Multiplier on every body motor. Lower = floppier ragdoll, higher = steadier."));
 
 	const FName Pelvis(TEXT("pelvis"));
 	const FName Spine(TEXT("spine_02"));
@@ -57,29 +55,37 @@ namespace PMRagdoll
 		D.VelocityStrength *= Scale;
 		return D;
 	}
+
+	/** Name shown in prompts: a spawned object's prompt name, else the actor's label. */
+	FString NameOf(const UPrimitiveComponent* Comp)
+	{
+		const AActor* Owner = Comp ? Comp->GetOwner() : nullptr;
+		if (const APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Owner))
+		{
+			return Spawned->GetDisplayName();
+		}
+		return Owner ? Owner->GetActorNameOrLabel() : FString();
+	}
 }
 
 UPMActiveRagdollComponent::UPMActiveRagdollComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
-	// After CharacterMovement and physics: we read simulated bones, correct the capsule and place the camera.
+	// After CharacterMovement and physics: we read simulated bones, place the hands and the camera.
 	PrimaryComponentTick.TickGroup = TG_PostPhysics;
 
-	LegDrive = PMRagdoll::Drive(1500.f, 150.f);
-	SpineDrive = PMRagdoll::Drive(3000.f, 300.f);
-	ArmDrive = PMRagdoll::Drive(800.f, 80.f);
-	ReachingArmDrive = PMRagdoll::Drive(80.f, 15.f);
+	// Strong enough that the body mostly holds its pose; it still sways and stumbles a bit.
+	LegDrive = PMRagdoll::Drive(4000.f, 400.f);
+	SpineDrive = PMRagdoll::Drive(8000.f, 800.f);
+	ArmDrive = PMRagdoll::Drive(2500.f, 250.f);
+	PlacedArmDrive = PMRagdoll::Drive(150.f, 20.f);
 
 	Arms[0].HandBone = TEXT("hand_l");
-	Arms[0].UpperArmBone = TEXT("upperarm_l");
 	Arms[0].ClavicleBone = TEXT("clavicle_l");
-	Arms[0].Button = EKeys::LeftMouseButton;
 	Arms[0].Side = -1.f;
 
 	Arms[1].HandBone = TEXT("hand_r");
-	Arms[1].UpperArmBone = TEXT("upperarm_r");
 	Arms[1].ClavicleBone = TEXT("clavicle_r");
-	Arms[1].Button = EKeys::RightMouseButton;
 	Arms[1].Side = 1.f;
 }
 
@@ -92,9 +98,9 @@ void UPMActiveRagdollComponent::BeginPlay()
 
 void UPMActiveRagdollComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	Drop();
 	for (FPMArmState& Arm : Arms)
 	{
-		ReleaseGrip(Arm, false);
 		if (Arm.Reach)
 		{
 			Arm.Reach->ReleaseComponent();
@@ -136,9 +142,6 @@ void UPMActiveRagdollComponent::SetupBody()
 
 	// Everything below the pelvis is simulated; the pelvis stays glued to the capsule.
 	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Pelvis, LegDrive, false);
-	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Spine, SpineDrive, true);
-	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Neck,
-		PMRagdoll::Scaled(SpineDrive, PMRagdoll::CVarNeckDrive.GetValueOnGameThread()), true);
 	Mesh->SetAllBodiesBelowSimulatePhysics(PMRagdoll::Pelvis, true, false);
 	if (!bSimulateLegs)
 	{
@@ -151,11 +154,13 @@ void UPMActiveRagdollComponent::SetupBody()
 	{
 		Arm.Reach = NewObject<UPhysicsHandleComponent>(GetOwner());
 		Arm.Reach->RegisterComponent();
-		Arm.Reach->SetLinearStiffness(ReachStiffness);
-		Arm.Reach->SetLinearDamping(ReachDamping);
-		Arm.Reach->SetInterpolationSpeed(25.f);
-		ApplyArmDrive(Arm);
+		Arm.Reach->SetLinearStiffness(HandStiffness);
+		Arm.Reach->SetLinearDamping(HandDamping);
+		Arm.Reach->SetInterpolationSpeed(40.f);
 	}
+	HoldHandle = NewObject<UPhysicsHandleComponent>(GetOwner(), TEXT("PMHoldHandle"));
+	HoldHandle->RegisterComponent();
+	ApplyBodyDrives();
 
 	// Movement feel (GDD 2.1): 70 kg body, accel ramps over ~0.3 s, momentum carries.
 	Movement->Mass = BodyMassKg;
@@ -164,7 +169,7 @@ void UPMActiveRagdollComponent::SetupBody()
 	Movement->BrakingDecelerationWalking = BrakingDeceleration;
 	Movement->GroundFriction = 3.f;
 
-	// Crouch (Ctrl): the capsule shrinks and we drop the hips ourselves (see UpdateStoopAndCrouch).
+	// Crouch (Ctrl): the capsule shrinks and we drop the hips ourselves (see UpdateCrouch).
 	Movement->GetNavAgentPropertiesRef().bCanCrouch = true;
 	Movement->MaxWalkSpeedCrouched = CrouchSpeed;
 	DefaultMeshZ = Mesh->GetRelativeLocation().Z;
@@ -217,13 +222,10 @@ void UPMActiveRagdollComponent::TryBindInput()
 
 	ArmInput = NewObject<UInputComponent>(GetOwner(), TEXT("PMArmInput"));
 	ArmInput->RegisterComponent();
-	ArmInput->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &UPMActiveRagdollComponent::OnLeftPressed);
-	ArmInput->BindKey(EKeys::LeftMouseButton, IE_Released, this, &UPMActiveRagdollComponent::OnLeftReleased);
-	// RMB is shared with the wand (it casts while the wand is drawn), so don't consume it.
-	ArmInput->BindKey(EKeys::RightMouseButton, IE_Pressed, this, &UPMActiveRagdollComponent::OnRightPressed).bConsumeInput = false;
-	ArmInput->BindKey(EKeys::RightMouseButton, IE_Released, this, &UPMActiveRagdollComponent::OnRightReleased).bConsumeInput = false;
-	ArmInput->BindKey(EKeys::MouseScrollUp, IE_Pressed, this, &UPMActiveRagdollComponent::OnReachOut);
-	ArmInput->BindKey(EKeys::MouseScrollDown, IE_Pressed, this, &UPMActiveRagdollComponent::OnReachIn);
+	ArmInput->BindKey(EKeys::E, IE_Pressed, this, &UPMActiveRagdollComponent::OnInteractPressed);
+	ArmInput->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &UPMActiveRagdollComponent::OnThrowPressed).bConsumeInput = false;
+	ArmInput->BindKey(EKeys::MouseScrollUp, IE_Pressed, this, &UPMActiveRagdollComponent::OnHoldFarther);
+	ArmInput->BindKey(EKeys::MouseScrollDown, IE_Pressed, this, &UPMActiveRagdollComponent::OnHoldCloser);
 	ArmInput->BindKey(EKeys::LeftShift, IE_Pressed, this, &UPMActiveRagdollComponent::OnSprintPressed);
 	ArmInput->BindKey(EKeys::LeftShift, IE_Released, this, &UPMActiveRagdollComponent::OnSprintReleased);
 	ArmInput->BindKey(EKeys::LeftControl, IE_Pressed, this, &UPMActiveRagdollComponent::OnCrouchPressed);
@@ -233,22 +235,8 @@ void UPMActiveRagdollComponent::TryBindInput()
 	SetupLocalView();
 }
 
-bool UPMActiveRagdollComponent::GetView(FVector& OutLocation, FRotator& OutRotation) const
+bool UPMActiveRagdollComponent::IsWandOut() const
 {
-	if (APlayerController* PC = BoundPC.Get())
-	{
-		PC->GetPlayerViewPoint(OutLocation, OutRotation);
-		return true;
-	}
-	return false;
-}
-
-bool UPMActiveRagdollComponent::IsWandHand(const FPMArmState& Arm) const
-{
-	if (Arm.Side < 0.f)
-	{
-		return false;
-	}
 	const UPMWandComponent* Wand = GetOwner()->FindComponentByClass<UPMWandComponent>();
 	return Wand && Wand->IsWandOut();
 }
@@ -257,6 +245,11 @@ bool UPMActiveRagdollComponent::IsSpellbookOpen() const
 {
 	const UPMSpellcasterComponent* Caster = GetOwner()->FindComponentByClass<UPMSpellcasterComponent>();
 	return Caster && Caster->IsSpellbookOpen();
+}
+
+bool UPMActiveRagdollComponent::IsLocalFirstPerson() const
+{
+	return GetLocalPC() != nullptr && PMRagdoll::CVarThirdPerson.GetValueOnGameThread() <= 0.f;
 }
 
 void UPMActiveRagdollComponent::Toast(const FString& Message) const
@@ -269,40 +262,22 @@ void UPMActiveRagdollComponent::Toast(const FString& Message) const
 
 // --- Input ---------------------------------------------------------------------------------------
 
-void UPMActiveRagdollComponent::OnReachOut()
+void UPMActiveRagdollComponent::OnThrowPressed()
 {
-	ReachDistance = FMath::Clamp(ReachDistance + 10.f, ReachDistanceRange.X, ReachDistanceRange.Y);
-}
-
-void UPMActiveRagdollComponent::OnReachIn()
-{
-	ReachDistance = FMath::Clamp(ReachDistance - 10.f, ReachDistanceRange.X, ReachDistanceRange.Y);
-}
-
-void UPMActiveRagdollComponent::OnSprintPressed()
-{
-	bSprinting = true;
-	if (Movement)
+	if (!IsSpellbookOpen())
 	{
-		Movement->MaxWalkSpeed = SprintSpeed;
-	}
-	for (const FPMArmState& Arm : Arms)
-	{
-		ApplyArmDrive(Arm);
+		Throw();
 	}
 }
 
-void UPMActiveRagdollComponent::OnSprintReleased()
+void UPMActiveRagdollComponent::OnHoldFarther()
 {
-	bSprinting = false;
-	if (Movement)
-	{
-		Movement->MaxWalkSpeed = WalkSpeed;
-	}
-	for (const FPMArmState& Arm : Arms)
-	{
-		ApplyArmDrive(Arm);
-	}
+	HoldDistance = FMath::Clamp(HoldDistance + 10.f, HoldDistanceRange.X, HoldDistanceRange.Y);
+}
+
+void UPMActiveRagdollComponent::OnHoldCloser()
+{
+	HoldDistance = FMath::Clamp(HoldDistance - 10.f, HoldDistanceRange.X, HoldDistanceRange.Y);
 }
 
 void UPMActiveRagdollComponent::OnCrouchPressed()
@@ -336,67 +311,53 @@ void UPMActiveRagdollComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 		TryBindInput();
 	}
 
-	// While typing, arms lock to their current grip (GDD 2.3). When the book closes, re-read the buttons.
-	const bool bBookOpen = IsSpellbookOpen();
-	if (bArmsLocked && !bBookOpen)
-	{
-		if (APlayerController* PC = BoundPC.Get())
-		{
-			for (FPMArmState& Arm : Arms)
-			{
-				Arm.bButtonDown = PC->IsInputKeyDown(Arm.Button);
-			}
-		}
-	}
-	bArmsLocked = bBookOpen;
-
-	FVector ViewLocation;
-	FRotator ViewRotation;
-	if (!GetView(ViewLocation, ViewRotation))
-	{
-		ViewLocation = GetOwner()->GetActorLocation();
-		ViewRotation = GetOwner()->GetActorRotation();
-	}
-	// Hands always aim from the mage's own eyes. The camera can be pulled back (pm.ThirdPerson); reaching
-	// "90 cm in front of the camera" would then put the hands behind the mage's back.
-	ViewLocation = GetEyeLocation();
-
-	if (GFrameCounter % 60 == 0)
-	{
-		const FVector Base = GetOwner()->GetActorLocation();
-		UE_LOG(LogPromptMages, Verbose, TEXT("Body (relative to capsule): pelvis %s head %s hand_l %s foot_l %s | visible %d sim %d"),
-			*(Mesh->GetBoneLocation(PMRagdoll::Pelvis) - Base).ToCompactString(),
-			*(Mesh->GetBoneLocation(PMRagdoll::Head) - Base).ToCompactString(),
-			*(Mesh->GetBoneLocation(TEXT("hand_l")) - Base).ToCompactString(),
-			*(Mesh->GetBoneLocation(TEXT("foot_l")) - Base).ToCompactString(),
-			Mesh->IsVisible() ? 1 : 0, Mesh->IsSimulatingPhysics(TEXT("spine_03")) ? 1 : 0);
-	}
-
 	UpdateMotors(DeltaTime);
-	UpdateStoopAndCrouch(DeltaTime);
-	for (FPMArmState& Arm : Arms)
-	{
-		UpdateArm(Arm, DeltaTime, ViewLocation, ViewRotation);
-	}
-	UpdateClimb(DeltaTime);
-	UpdateForcesAndLeash(DeltaTime);
+	UpdateCrouch(DeltaTime);
+	UpdateHeld(DeltaTime);
+	UpdateMoveSpeed();
+	UpdateInteractPrompt();
+	UpdateArms();
 	UpdateCamera(DeltaTime);
 }
 
+// --- Body ----------------------------------------------------------------------------------------
+
 void UPMActiveRagdollComponent::UpdateMotors(float DeltaTime)
 {
+	// Tuning from the console takes effect right away.
+	const float Stiffness = PMRagdoll::CVarBodyStiffness.GetValueOnGameThread();
+	const float NeckDrive = PMRagdoll::CVarNeckDrive.GetValueOnGameThread();
+	if (Stiffness != AppliedStiffness || NeckDrive != AppliedNeckDrive)
+	{
+		ApplyBodyDrives();
+	}
+
 	// Motors are strong on the ground and drop in the air (GDD 2.1).
-	const float Target = (Movement->IsFalling() && !bClimbing) ? AirborneMotorScale : 1.f;
+	const float Target = Movement->IsFalling() ? AirborneMotorScale : 1.f;
 	MotorScale = FMath::FInterpTo(MotorScale, Target, DeltaTime, 6.f);
 	PhysicalAnimation->SetStrengthMultiplyer(MotorScale);
 }
 
-// --- Arms ----------------------------------------------------------------------------------------
-
-bool UPMActiveRagdollComponent::IsReaching(EPMArm Arm) const
+void UPMActiveRagdollComponent::ApplyBodyDrives()
 {
-	const FPMArmState& A = GetArm(Arm);
-	return A.Reach && A.Reach->GetGrabbedComponent() != nullptr;
+	AppliedStiffness = PMRagdoll::CVarBodyStiffness.GetValueOnGameThread();
+	AppliedNeckDrive = PMRagdoll::CVarNeckDrive.GetValueOnGameThread();
+
+	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Spine, PMRagdoll::Scaled(SpineDrive, AppliedStiffness), true);
+
+	// The head is heavy on a thin neck: with only the spine's motors it droops, chin on chest.
+	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Neck,
+		PMRagdoll::Scaled(SpineDrive, AppliedStiffness * AppliedNeckDrive), true);
+
+	const FPhysicalAnimationData Legs = PMRagdoll::Scaled(LegDrive, AppliedStiffness * (bLegsRelaxed ? CrouchLegScale : 1.f));
+	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::ThighL, Legs, true);
+	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::ThighR, Legs, true);
+
+	// The spine call also covered the arms; put their own drives back.
+	for (const FPMArmState& Arm : Arms)
+	{
+		ApplyArmDrive(Arm);
+	}
 }
 
 void UPMActiveRagdollComponent::ApplyArmDrive(const FPMArmState& Arm)
@@ -405,24 +366,29 @@ void UPMActiveRagdollComponent::ApplyArmDrive(const FPMArmState& Arm)
 	{
 		return;
 	}
-	const bool bActive = Arm.IsGripping() || (Arm.Reach && Arm.Reach->GetGrabbedComponent());
-	FPhysicalAnimationData Data = bActive ? ReachingArmDrive : ArmDrive;
-	if (bSprinting)
-	{
-		Data = PMRagdoll::Scaled(Data, SprintArmScale);
-	}
-	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(Arm.ClavicleBone, Data, true);
+	const bool bPlaced = Arm.Reach && Arm.Reach->GetGrabbedComponent();
+	const float Stiffness = FMath::Max(AppliedStiffness, 0.f);
+	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(Arm.ClavicleBone,
+		PMRagdoll::Scaled(bPlaced ? PlacedArmDrive : ArmDrive, Stiffness), true);
 }
 
-FVector UPMActiveRagdollComponent::GetShoulderLocation(const FPMArmState& Arm) const
+void UPMActiveRagdollComponent::UpdateCrouch(float DeltaTime)
 {
-	// Taken from the capsule rather than the floppy bone, so reach and leash feel stable.
-	// Measured from the floor so crouching (smaller capsule + dropped hips) lowers it correctly.
-	const ACharacter* Character = CastChecked<ACharacter>(GetOwner());
-	const float FloorZ = Character->GetActorLocation().Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-	FVector Shoulder = Character->GetActorLocation() + Character->GetActorRightVector() * Arm.Side * 18.f;
-	Shoulder.Z = FloorZ + StandingHalfHeight * 1.5f - HipDrop;
-	return Shoulder;
+	ACharacter* Character = CastChecked<ACharacter>(GetOwner());
+
+	// Crouch: the capsule shrinks (CharacterMovement) and we drop the hips; the relaxed legs fold under them.
+	const bool bCrouched = Character->bIsCrouched;
+	HipDrop = FMath::FInterpTo(HipDrop, bCrouched ? CrouchHipDrop : 0.f, DeltaTime, 6.f);
+	const float CapsuleShift = StandingHalfHeight - Character->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+	FVector MeshLocation = Mesh->GetRelativeLocation();
+	MeshLocation.Z = DefaultMeshZ + CapsuleShift - HipDrop;
+	Mesh->SetRelativeLocation(MeshLocation);
+
+	if (bCrouched != bLegsRelaxed)
+	{
+		bLegsRelaxed = bCrouched;
+		ApplyBodyDrives();
+	}
 }
 
 FVector UPMActiveRagdollComponent::GetEyeLocation() const
@@ -435,444 +401,316 @@ FVector UPMActiveRagdollComponent::GetEyeLocation() const
 	return Eye;
 }
 
-FVector UPMActiveRagdollComponent::GetReachTarget(const FPMArmState& Arm, const FVector& ViewLocation, const FRotator& ViewRotation) const
+FRotator UPMActiveRagdollComponent::GetViewRotation() const
 {
-	const FVector Dir = ViewRotation.Vector();
-	const FVector Right = FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Y);
-	const float MaxReach = ArmLength + StoopReach * Stoop;
+	const APawn* Pawn = CastChecked<APawn>(GetOwner());
+	return Pawn->GetBaseAimRotation();
+}
 
-	// Aim at whatever the crosshair is on, if it's within reach (things on the floor, a ledge, a crate).
-	// Otherwise hold the hand at the wheel-controlled distance, which is what you swing and throw with.
-	FVector Target = ViewLocation + Dir * ReachDistance;
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMReachAim), false, GetOwner());
-	for (const FPMArmState& Other : Arms)
+FVector UPMActiveRagdollComponent::GetShoulderLocation(const FPMArmState& Arm) const
+{
+	// Taken from the capsule rather than the floppy bone, so hand placement feels stable.
+	const ACharacter* Character = CastChecked<ACharacter>(GetOwner());
+	const float FloorZ = Character->GetActorLocation().Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	FVector Shoulder = Character->GetActorLocation() + Character->GetActorRightVector() * Arm.Side * 18.f;
+	Shoulder.Z = FloorZ + StandingHalfHeight * 1.5f - HipDrop;
+	return Shoulder;
+}
+
+void UPMActiveRagdollComponent::UpdateMoveSpeed()
+{
+	float Speed = bSprinting ? SprintSpeed : WalkSpeed;
+	if (Held.IsValid())
 	{
-		if (const UPrimitiveComponent* Held = Other.GripTarget.Get())
-		{
-			Params.AddIgnoredActor(Held->GetOwner()); // Don't aim at what we're already carrying.
-		}
+		// Carrying slows you a little; dragging something heavy slows you a lot.
+		const float Alpha = bDragging
+			? FMath::Clamp((HeldMass - CarryMaxKg) / FMath::Max(DragMaxKg - CarryMaxKg, 1.f), 0.f, 1.f)
+			: 0.f;
+		Speed *= bDragging ? FMath::Lerp(0.8f, HeaviestDragSpeedScale, Alpha)
+			: FMath::Lerp(1.f, 0.85f, FMath::Clamp(HeldMass / CarryMaxKg, 0.f, 1.f));
 	}
+	Movement->MaxWalkSpeed = Speed;
+}
+
+// --- Picking things up ---------------------------------------------------------------------------
+
+UPrimitiveComponent* UPMActiveRagdollComponent::FindInteractTarget(FVector& OutHitPoint) const
+{
+	const FVector Eye = GetEyeLocation();
+	const FVector Dir = GetViewRotation().Vector();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMInteract), false, GetOwner());
 	FHitResult Hit;
-	const float TraceLength = ReachDistance + StoopReach + ArmLength;
-	if (GetWorld()->LineTraceSingleByChannel(Hit, ViewLocation, ViewLocation + Dir * TraceLength, ECC_Visibility, Params))
+	if (!GetWorld()->LineTraceSingleByChannel(Hit, Eye, Eye + Dir * InteractRange, ECC_Visibility, Params))
 	{
-		if (Hit.Distance < ReachDistance || Stoop > 0.2f)
+		return nullptr;
+	}
+	OutHitPoint = Hit.ImpactPoint;
+
+	UPrimitiveComponent* Comp = Hit.GetComponent();
+	if (APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Hit.GetActor()))
+	{
+		Comp = Spawned->GetBody(); // The welded root, not a decorative sub-part.
+	}
+	if (!Comp || !Comp->IsSimulatingPhysics())
+	{
+		return nullptr; // Walls, floors and anything bolted down.
+	}
+	return Comp;
+}
+
+void UPMActiveRagdollComponent::Interact()
+{
+	if (!bBodyReady || IsSpellbookOpen())
+	{
+		return;
+	}
+	if (Held.IsValid())
+	{
+		Drop();
+		return;
+	}
+
+	FVector HitPoint;
+	UPrimitiveComponent* Target = FindInteractTarget(HitPoint);
+	if (!Target)
+	{
+		return;
+	}
+	if (APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Target->GetOwner()))
+	{
+		if (Spawned->IsMystery())
 		{
-			Target = Hit.ImpactPoint - Dir * 4.f;
+			Spawned->RevealMystery(); // Mystery Crates open when you grab them.
+			return;
 		}
 	}
-	Target += Right * Arm.Side * 12.f;
-
-	const FVector Shoulder = GetShoulderLocation(Arm);
-	const FVector ToTarget = Target - Shoulder;
-	if (ToTarget.SizeSquared() > FMath::Square(MaxReach))
+	const float Mass = Target->GetMass();
+	if (Mass > DragMaxKg)
 	{
-		Target = Shoulder + ToTarget.GetSafeNormal() * MaxReach;
+		Toast(FString::Printf(TEXT("%s won't budge (%.0f kg). Get some help!"), *PMRagdoll::NameOf(Target), Mass));
+		return;
 	}
-	return Target;
+	PickUp(Target, HitPoint);
 }
 
-void UPMActiveRagdollComponent::UpdateStoopAndCrouch(float DeltaTime)
+void UPMActiveRagdollComponent::PickUp(UPrimitiveComponent* Target, const FVector& HitPoint)
 {
-	ACharacter* Character = CastChecked<ACharacter>(GetOwner());
+	Held = Target;
+	HeldMass = Target->GetMass();
+	HeldName = PMRagdoll::NameOf(Target);
+	bDragging = HeldMass > CarryMaxKg;
 
-	// Bend over when reaching while looking down, so hands can get to things on the floor.
-	const bool bReachingByHand = !bArmsLocked && (Arms[0].bButtonDown || (Arms[1].bButtonDown && !IsWandHand(Arms[1])));
-	const float LookDown = -FRotator::NormalizeAxis(Character->GetControlRotation().Pitch);
-	float Target = bReachingByHand
-		? FMath::Clamp((LookDown - StoopStartPitch) / FMath::Max(StoopFullPitch - StoopStartPitch, 1.f), 0.f, 1.f)
-		: 0.f;
-	if (bClimbing || Movement->IsFalling())
+	const FRotator ViewYaw(0.f, GetViewRotation().Yaw, 0.f);
+	if (!bDragging)
 	{
-		Target = 0.f;
+		// Carry: hold it in front of your face, keeping how it was turned relative to you.
+		HeldRadius = FMath::Clamp(Target->Bounds.SphereRadius, 5.f, 80.f);
+		HeldRelativeRotation = ViewYaw.Quaternion().Inverse() * Target->GetComponentQuat();
+		HoldHandle->SetLinearStiffness(1500.f);
+		HoldHandle->SetLinearDamping(200.f);
+		HoldHandle->SetAngularStiffness(1500.f);
+		HoldHandle->SetAngularDamping(500.f);
+		HoldHandle->SetInterpolationSpeed(30.f);
+		HoldHandle->GrabComponentAtLocationWithRotation(Target, NAME_None, Target->Bounds.Origin, Target->GetComponentRotation());
 	}
-	Stoop = FMath::FInterpTo(Stoop, Target, DeltaTime, 4.f);
-
-	// Crouch: the capsule shrinks (CharacterMovement) and we drop the hips; the relaxed legs fold under them.
-	const bool bCrouched = Character->bIsCrouched;
-	HipDrop = FMath::FInterpTo(HipDrop, bCrouched ? CrouchHipDrop : 0.f, DeltaTime, 6.f);
-	const float CapsuleShift = StandingHalfHeight - Character->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
-	FVector MeshLocation = Mesh->GetRelativeLocation();
-	MeshLocation.Z = DefaultMeshZ + CapsuleShift - HipDrop;
-	Mesh->SetRelativeLocation(MeshLocation);
-
-	if (FMath::Abs(Stoop - AppliedStoop) > 0.05f || bCrouched != bLegsRelaxed)
+	else
 	{
-		bLegsRelaxed = bCrouched;
-		AppliedStoop = Stoop;
-		ApplySpineAndLegDrives();
+		// Drag: hang on to the spot you grabbed and pull it along behind you, at the same height.
+		const ACharacter* Character = CastChecked<ACharacter>(GetOwner());
+		const float FloorZ = Character->GetActorLocation().Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		DragLocalPoint = Target->GetComponentTransform().InverseTransformPosition(HitPoint);
+		DragDistance = FMath::Clamp(FVector::Dist2D(HitPoint, Character->GetActorLocation()), 70.f, 170.f);
+		DragHeight = FMath::Clamp(HitPoint.Z - FloorZ, 10.f, 150.f);
+		HoldHandle->SetLinearStiffness(400.f);
+		HoldHandle->SetLinearDamping(150.f);
+		HoldHandle->SetInterpolationSpeed(10.f);
+		HoldHandle->GrabComponentAtLocation(Target, NAME_None, HitPoint);
+	}
+	UE_LOG(LogPromptMages, Verbose, TEXT("%s %s (%.0f kg)"), bDragging ? TEXT("Dragging") : TEXT("Carrying"), *HeldName, HeldMass);
+}
+
+void UPMActiveRagdollComponent::Drop()
+{
+	if (HoldHandle)
+	{
+		HoldHandle->ReleaseComponent();
+	}
+	Held = nullptr;
+	HeldName.Empty();
+	HeldMass = 0.f;
+	bDragging = false;
+}
+
+void UPMActiveRagdollComponent::Throw()
+{
+	UPrimitiveComponent* Target = Held.Get();
+	if (!Target || bDragging)
+	{
+		return;
+	}
+	const float Mass = HeldMass;
+	Drop();
+
+	// Light things fly, heavy things lob.
+	const float Speed = ThrowSpeed * FMath::Lerp(1.f, 0.35f, FMath::Clamp(Mass / CarryMaxKg, 0.f, 1.f));
+	const FVector Dir = (GetViewRotation().Vector() + FVector(0.f, 0.f, 0.15f)).GetSafeNormal();
+	Target->SetPhysicsLinearVelocity(Dir * Speed + Movement->Velocity * 0.5f);
+}
+
+void UPMActiveRagdollComponent::UpdateHeld(float DeltaTime)
+{
+	UPrimitiveComponent* Target = Held.Get();
+	if (!Target)
+	{
+		if (HoldHandle && HoldHandle->GetGrabbedComponent())
+		{
+			Drop(); // It burned up, got cleared, or something else took it.
+		}
+		return;
+	}
+	if (!Target->IsSimulatingPhysics() || HoldHandle->GetGrabbedComponent() != Target)
+	{
+		Drop();
+		return;
+	}
+
+	const FVector Eye = GetEyeLocation();
+	const FRotator View = GetViewRotation();
+	const FRotator ViewYaw(0.f, View.Yaw, 0.f);
+	FVector Goal;
+	FVector Current;
+	if (!bDragging)
+	{
+		// A little below the line of sight, so you can still see past it.
+		Goal = Eye + View.Vector() * (HoldDistance + HeldRadius) - FRotationMatrix(View).GetUnitAxis(EAxis::Z) * (HeldRadius * 0.6f);
+		Current = Target->Bounds.Origin;
+		HoldHandle->SetTargetLocationAndRotation(Goal, (ViewYaw.Quaternion() * HeldRelativeRotation).Rotator());
+	}
+	else
+	{
+		const ACharacter* Character = CastChecked<ACharacter>(GetOwner());
+		const float FloorZ = Character->GetActorLocation().Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		Goal = Character->GetActorLocation() + ViewYaw.Vector() * DragDistance;
+		Goal.Z = FloorZ + DragHeight;
+		Current = Target->GetComponentTransform().TransformPosition(DragLocalPoint);
+		HoldHandle->SetTargetLocation(Goal);
+	}
+
+	// Snagged on something and left behind: let go.
+	if (FVector::DistSquared(Goal, Current) > FMath::Square(bDragging ? 220.f : 160.f))
+	{
+		Toast(FString::Printf(TEXT("You lost hold of the %s."), *HeldName));
+		Drop();
 	}
 }
 
-void UPMActiveRagdollComponent::ApplySpineAndLegDrives()
+void UPMActiveRagdollComponent::UpdateInteractPrompt()
 {
-	// Weaker spine motors let the reaching hands pull the torso down into a bend.
-	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Spine,
-		PMRagdoll::Scaled(SpineDrive, FMath::Lerp(1.f, StoopSpineScale, AppliedStoop)), true);
-
-	// The head is heavy on a thin neck: with the spine's motors it droops ~50 degrees, chin on chest.
-	// A stiffer neck keeps it up (still softened while bending over so you can look down at your hands).
-	const float NeckScale = PMRagdoll::CVarNeckDrive.GetValueOnGameThread() * FMath::Lerp(1.f, 0.5f, AppliedStoop);
-	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Neck, PMRagdoll::Scaled(SpineDrive, NeckScale), true);
-
-	const FPhysicalAnimationData Legs = bLegsRelaxed ? PMRagdoll::Scaled(LegDrive, CrouchLegScale) : LegDrive;
-	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::ThighL, Legs, true);
-	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::ThighR, Legs, true);
-
-	// The spine call also covered the arms; put their own drives back.
-	for (const FPMArmState& Arm : Arms)
+	InteractPrompt.Reset();
+	if (!GetLocalPC())
 	{
+		return;
+	}
+	if (Held.IsValid())
+	{
+		InteractPrompt = bDragging
+			? FString::Printf(TEXT("Dragging %s (%.0f kg)    [E] let go"), *HeldName, HeldMass)
+			: FString::Printf(TEXT("Holding %s    [E] drop    [LMB] throw"), *HeldName);
+		return;
+	}
+
+	FVector HitPoint;
+	const UPrimitiveComponent* Target = FindInteractTarget(HitPoint);
+	if (!Target)
+	{
+		return;
+	}
+	const APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Target->GetOwner());
+	const FString Name = PMRagdoll::NameOf(Target);
+	const float Mass = Target->GetMass();
+	if (Spawned && Spawned->IsMystery())
+	{
+		InteractPrompt = FString::Printf(TEXT("[E] Open %s"), *Name);
+	}
+	else if (Mass > DragMaxKg)
+	{
+		InteractPrompt = FString::Printf(TEXT("%s (%.0f kg) - too heavy alone"), *Name, Mass);
+	}
+	else if (Mass > CarryMaxKg)
+	{
+		InteractPrompt = FString::Printf(TEXT("[E] Drag %s (%.0f kg)"), *Name, Mass);
+	}
+	else
+	{
+		InteractPrompt = FString::Printf(TEXT("[E] Pick up %s"), *Name);
+	}
+}
+
+// --- Hands ---------------------------------------------------------------------------------------
+
+void UPMActiveRagdollComponent::PlaceHand(FPMArmState& Arm, bool bPlace, const FVector& Target)
+{
+	const bool bPlaced = Arm.Reach->GetGrabbedComponent() != nullptr;
+	if (bPlace)
+	{
+		if (!bPlaced)
+		{
+			Arm.Reach->GrabComponentAtLocation(Mesh, Arm.HandBone, Mesh->GetBoneLocation(Arm.HandBone));
+			ApplyArmDrive(Arm);
+		}
+		// Never ask for more than an arm's length from the shoulder.
+		const FVector Shoulder = GetShoulderLocation(Arm);
+		FVector Goal = Target;
+		if (FVector::DistSquared(Goal, Shoulder) > FMath::Square(ArmLength))
+		{
+			Goal = Shoulder + (Goal - Shoulder).GetSafeNormal() * ArmLength;
+		}
+		Arm.Reach->SetTargetLocation(Goal);
+	}
+	else if (bPlaced)
+	{
+		Arm.Reach->ReleaseComponent();
 		ApplyArmDrive(Arm);
 	}
 }
 
-FVector UPMActiveRagdollComponent::GetGripAnchor(const FPMArmState& Arm) const
+void UPMActiveRagdollComponent::UpdateArms()
 {
-	const UPrimitiveComponent* Target = Arm.GripTarget.Get();
-	return Target ? Target->GetComponentTransform().TransformPosition(Arm.GripLocalPoint) : FVector::ZeroVector;
-}
+	const FVector Eye = GetEyeLocation();
+	const FRotationMatrix View(GetViewRotation());
+	const FVector Forward = View.GetUnitAxis(EAxis::X);
+	const FVector Right = View.GetUnitAxis(EAxis::Y);
+	const FVector Up = View.GetUnitAxis(EAxis::Z);
+	const bool bFirstPerson = IsLocalFirstPerson();
+	const bool bWand = IsWandOut();
+	const UPrimitiveComponent* Target = Held.Get();
 
-void UPMActiveRagdollComponent::StartReach(FPMArmState& Arm)
-{
-	Arm.Reach->GrabComponentAtLocation(Mesh, Arm.HandBone, Mesh->GetBoneLocation(Arm.HandBone));
-	ApplyArmDrive(Arm);
-}
-
-void UPMActiveRagdollComponent::StopReach(FPMArmState& Arm)
-{
-	Arm.Reach->ReleaseComponent();
-	ApplyArmDrive(Arm);
-}
-
-void UPMActiveRagdollComponent::UpdateArm(FPMArmState& Arm, float DeltaTime, const FVector& ViewLocation, const FRotator& ViewRotation)
-{
-	const double Now = GetWorld()->GetTimeSeconds();
-	const bool bReaching = Arm.Reach->GetGrabbedComponent() != nullptr;
-
-	// With the wand drawn, the right arm holds it out toward the crosshair instead of grabbing.
-	if (IsWandHand(Arm) && !bArmsLocked)
-	{
-		if (Arm.IsGripping())
-		{
-			ReleaseGrip(Arm, false);
-		}
-		if (!bReaching)
-		{
-			StartReach(Arm);
-		}
-		const FVector Right = FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Y);
-		FVector Target = ViewLocation + ViewRotation.Vector() * 55.f + Right * 16.f - FVector(0.f, 0.f, 12.f);
-		const FVector Shoulder = GetShoulderLocation(Arm);
-		if (FVector::DistSquared(Target, Shoulder) > FMath::Square(ArmLength))
-		{
-			Target = Shoulder + (Target - Shoulder).GetSafeNormal() * ArmLength;
-		}
-		Arm.Reach->SetTargetLocation(Target);
-		Arm.Load = 0.f;
-		Arm.Stamina = FMath::Min(1.f, Arm.Stamina + DeltaTime * GripRegenPerSecond);
-		return;
-	}
-
-	// While the Spellbook is open the arm keeps doing exactly what it was doing.
-	if (!bArmsLocked)
-	{
-		if (Arm.bButtonDown)
-		{
-			if (!bReaching)
-			{
-				StartReach(Arm);
-			}
-
-			Arm.Reach->SetTargetLocation(GetReachTarget(Arm, ViewLocation, ViewRotation));
-
-			if (!Arm.IsGripping() && Now >= Arm.RegripBlockedUntil && Arm.Stamina > 0.15f)
-			{
-				TryGrip(Arm);
-			}
-		}
-		else
-		{
-			if (bReaching)
-			{
-				StopReach(Arm);
-			}
-			if (Arm.IsGripping())
-			{
-				ReleaseGrip(Arm, false);
-			}
-		}
-	}
-
-	// Grip stamina drains by the load the hand is actually carrying.
-	if (Arm.IsGripping())
-	{
-		if (!Arm.GripTarget.IsValid())
-		{
-			ReleaseGrip(Arm, false);
-			return;
-		}
-
-		// Constraint forces come back in Newtons. Smooth them so a single jolt doesn't empty the grip.
-		FVector LinearForce, AngularForce;
-		Arm.Grip->GetConstraintForce(LinearForce, AngularForce);
-		const float RawLoad = LinearForce.Size() / (MaxLoadPerArmKg * 9.81f);
-		float Load = FMath::FInterpTo(Arm.Load, RawLoad, DeltaTime, 3.f);
-
-		// Hanging from the world: the capsule isn't physics, so count body weight per hand ourselves.
-		if (Arm.bGripStatic && !Movement->IsMovingOnGround())
-		{
-			int32 StaticHands = 0;
-			for (const FPMArmState& Other : Arms)
-			{
-				StaticHands += (Other.IsGripping() && Other.bGripStatic) ? 1 : 0;
-			}
-			Load = FMath::Max(Load, 1.f / FMath::Max(StaticHands, 1));
-		}
-
-		Arm.Load = FMath::Clamp(Load, 0.05f, 50.f);
-		if (GFrameCounter % 30 == 0)
-		{
-			UE_LOG(LogPromptMages, Verbose, TEXT("%s grip: force %s, load %.2f, stamina %.2f"), Arm.Side < 0.f ? TEXT("Left") : TEXT("Right"),
-				*LinearForce.ToCompactString(), Arm.Load, Arm.Stamina);
-		}
-		const float Drain = Arm.Load / GripSecondsAtMaxLoad * (bSprinting ? 1.5f : 1.f);
-		Arm.Stamina -= DeltaTime * Drain;
-		if (Arm.Stamina <= 0.f)
-		{
-			Arm.Stamina = 0.f;
-			ReleaseGrip(Arm, true);
-			Arm.RegripBlockedUntil = Now + 1.0;
-		}
-	}
-	else
-	{
-		Arm.Load = 0.f;
-		Arm.Stamina = FMath::Min(1.f, Arm.Stamina + DeltaTime * GripRegenPerSecond);
-	}
-}
-
-void UPMActiveRagdollComponent::TryGrip(FPMArmState& Arm)
-{
-	// Grip from the palm (between the wrist and the knuckles), not the wrist: that's what touches things.
-	FVector Hand = Mesh->GetBoneLocation(Arm.HandBone);
-	const FName Knuckle(Arm.Side < 0.f ? TEXT("middle_01_l") : TEXT("middle_01_r"));
-	if (Mesh->GetBoneIndex(Knuckle) != INDEX_NONE)
-	{
-		Hand = (Hand + Mesh->GetBoneLocation(Knuckle)) * 0.5f;
-	}
-
-	FCollisionObjectQueryParams Objects;
-	Objects.AddObjectTypesToQuery(ECC_WorldStatic);
-	Objects.AddObjectTypesToQuery(ECC_WorldDynamic);
-	Objects.AddObjectTypesToQuery(ECC_PhysicsBody);
-	Objects.AddObjectTypesToQuery(ECC_Destructible);
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMGrip), false, GetOwner());
-
-	TArray<FOverlapResult> Overlaps;
-	GetWorld()->OverlapMultiByObjectType(Overlaps, Hand, FQuat::Identity, Objects, FCollisionShape::MakeSphere(GripRadius), Params);
-
-	UPrimitiveComponent* Best = nullptr;
-	int32 BestItem = INDEX_NONE;
-	float BestDistance = TNumericLimits<float>::Max();
-	for (const FOverlapResult& Overlap : Overlaps)
-	{
-		UPrimitiveComponent* Comp = Overlap.GetComponent();
-		if (!Comp || Comp->GetOwner() == GetOwner())
-		{
-			continue;
-		}
-		const ECollisionEnabled::Type Collision = Comp->GetCollisionEnabled();
-		if (Collision != ECollisionEnabled::QueryAndPhysics && Collision != ECollisionEnabled::PhysicsOnly)
-		{
-			continue; // Triggers and query-only shapes can't be held.
-		}
-		FVector Closest;
-		const float Distance = Comp->GetClosestPointOnCollision(Hand, Closest);
-		if (Distance < BestDistance)
-		{
-			Best = Comp;
-			BestItem = Overlap.ItemIndex;
-			BestDistance = Distance;
-		}
-	}
-	if (!Best)
-	{
-		return;
-	}
-
-	FName TargetBone = NAME_None;
-	if (APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Best->GetOwner()))
-	{
-		// Mystery Crates open when grabbed.
-		if (Spawned->IsMystery())
-		{
-			Spawned->RevealMystery();
-			Arm.RegripBlockedUntil = GetWorld()->GetTimeSeconds() + 0.5;
-			return;
-		}
-		Best = Spawned->GetBody(); // The welded root, not a decorative sub-part.
-	}
-	else if (const USkeletalMeshComponent* Skeletal = Cast<USkeletalMeshComponent>(Best))
-	{
-		if (Skeletal->Bodies.IsValidIndex(BestItem) && Skeletal->Bodies[BestItem] && Skeletal->Bodies[BestItem]->BodySetup.IsValid())
-		{
-			TargetBone = Skeletal->Bodies[BestItem]->BodySetup->BoneName;
-		}
-	}
-
-	// A ball joint at the hand: position locked, rotation free, like holding a handle.
-	UPhysicsConstraintComponent* Constraint = NewObject<UPhysicsConstraintComponent>(GetOwner());
-	Constraint->SetWorldLocation(Hand);
-	Constraint->RegisterComponent();
-	Constraint->SetLinearXLimit(LCM_Locked, 0.f);
-	Constraint->SetLinearYLimit(LCM_Locked, 0.f);
-	Constraint->SetLinearZLimit(LCM_Locked, 0.f);
-	Constraint->SetAngularSwing1Limit(ACM_Free, 0.f);
-	Constraint->SetAngularSwing2Limit(ACM_Free, 0.f);
-	Constraint->SetAngularTwistLimit(ACM_Free, 0.f);
-	Constraint->SetDisableCollision(true);
-	Constraint->SetConstrainedComponents(Mesh, Arm.HandBone, Best, TargetBone);
-
-	Arm.Grip = Constraint;
-	Arm.GripTarget = Best;
-	Arm.bGripStatic = !Best->IsSimulatingPhysics(TargetBone);
-	Arm.GripLocalPoint = Best->GetComponentTransform().InverseTransformPosition(Hand);
-	ApplyArmDrive(Arm);
-
-	UE_LOG(LogPromptMages, Verbose, TEXT("%s hand gripped %s (%s)"), Arm.Side < 0.f ? TEXT("Left") : TEXT("Right"),
-		*GetNameSafe(Best->GetOwner()), Arm.bGripStatic ? TEXT("static") : TEXT("dynamic"));
-}
-
-void UPMActiveRagdollComponent::ReleaseGrip(FPMArmState& Arm, bool bSlipped)
-{
-	if (!Arm.Grip)
-	{
-		return;
-	}
-	Arm.Grip->BreakConstraint();
-	Arm.Grip->DestroyComponent();
-	Arm.Grip = nullptr;
-	Arm.GripTarget = nullptr;
-	Arm.Load = 0.f;
-	ApplyArmDrive(Arm);
-
-	if (bSlipped)
-	{
-		Toast(FString::Printf(TEXT("*fwip* - your %s hand slipped."), Arm.Side < 0.f ? TEXT("left") : TEXT("right")));
-	}
-}
-
-// --- Body-level forces ---------------------------------------------------------------------------
-
-void UPMActiveRagdollComponent::UpdateForcesAndLeash(float DeltaTime)
-{
 	for (FPMArmState& Arm : Arms)
 	{
-		if (!Arm.IsGripping())
+		// The wand hand holds the wand out toward the crosshair.
+		if (bWand && Arm.Side > 0.f)
 		{
+			PlaceHand(Arm, true, Eye + Forward * 55.f + Right * 16.f - Up * 12.f);
 			continue;
 		}
-
-		if (!Arm.bGripStatic)
+		// Holding something: hands on it (either side of a carried thing, together on a dragged one).
+		if (Target)
 		{
-			// Two-way forces: whatever the hand holds pulls the body (a rolling turnip drags you along).
-			// The pelvis is kinematic, so the physics engine can't do this for us.
-			// The force (Newtons) points from the hand toward what it holds. Only the part beyond what an arm can
-			// comfortably hold drags the body, so normal carrying doesn't tug you around.
-			FVector LinearForce, AngularForce;
-			Arm.Grip->GetConstraintForce(LinearForce, AngularForce);
-			const FVector Horizontal(LinearForce.X, LinearForce.Y, 0.f);
-			const float Magnitude = Horizontal.Size();
-			const float Comfortable = MaxLoadPerArmKg * 9.81f;
-			if (Magnitude > Comfortable)
-			{
-				// x100: Newtons to Unreal's kg*cm/s^2.
-				Movement->AddForce(Horizontal / Magnitude * (Magnitude - Comfortable) * 100.f * ForceTransfer);
-			}
+			const FVector Grip = bDragging
+				? Target->GetComponentTransform().TransformPosition(DragLocalPoint) + Right * Arm.Side * 12.f
+				: Target->Bounds.Origin + Right * Arm.Side * (HeldRadius + 6.f);
+			PlaceHand(Arm, true, Grip);
 			continue;
 		}
-
-		if (bClimbing)
+		// First person: hands up in view, ready. Third person (and how others see you): arms hang.
+		if (bFirstPerson)
 		{
+			const FVector& O = FirstPersonHandOffset;
+			PlaceHand(Arm, true, Eye + Forward * O.X + Right * Arm.Side * O.Y + Up * O.Z);
 			continue;
 		}
-
-		// Holding the world works like a rope: you can't move further than an arm's length from the grip.
-		const FVector Anchor = GetGripAnchor(Arm);
-		const FVector Shoulder = GetShoulderLocation(Arm);
-		const FVector ToAnchor = Anchor - Shoulder;
-		const float Distance = ToAnchor.Size();
-		const float MaxDistance = ArmLength + 15.f;
-		if (Distance > MaxDistance)
-		{
-			const FVector Dir = ToAnchor / Distance;
-			GetOwner()->AddActorWorldOffset(Dir * (Distance - MaxDistance), true);
-			const float Away = FVector::DotProduct(Movement->Velocity, Dir);
-			if (Away < 0.f)
-			{
-				Movement->Velocity -= Dir * Away; // Keep the swing, drop the stretch.
-			}
-		}
+		PlaceHand(Arm, false, FVector::ZeroVector);
 	}
-}
-
-void UPMActiveRagdollComponent::UpdateClimb(float DeltaTime)
-{
-	int32 StaticHands = 0;
-	float TopZ = -TNumericLimits<float>::Max();
-	FVector AnchorSum = FVector::ZeroVector;
-	for (const FPMArmState& Arm : Arms)
-	{
-		if (Arm.IsGripping() && Arm.bGripStatic)
-		{
-			++StaticHands;
-			const FVector Anchor = GetGripAnchor(Arm);
-			TopZ = FMath::Max(TopZ, Anchor.Z);
-			AnchorSum += Anchor;
-		}
-	}
-
-	const APawn* Pawn = CastChecked<APawn>(GetOwner());
-	const float Pitch = FRotator::NormalizeAxis(Pawn->GetControlRotation().Pitch);
-	const bool bLookingUp = Pitch > ClimbLookUpPitch;
-
-	// Both hands on an edge + look up = pull yourself up (GDD 2.1).
-	if (!bClimbing)
-	{
-		if (StaticHands == 2 && bLookingUp && !bArmsLocked)
-		{
-			bClimbing = true;
-			Movement->SetMovementMode(MOVE_Flying);
-		}
-		return;
-	}
-
-	if (StaticHands < 2 || !bLookingUp)
-	{
-		bClimbing = false;
-		Movement->SetMovementMode(MOVE_Falling);
-		return;
-	}
-
-	const ACharacter* Character = CastChecked<ACharacter>(GetOwner());
-	const float FeetZ = Character->GetActorLocation().Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-	if (FeetZ < TopZ + 5.f)
-	{
-		const FVector ToAnchors = (AnchorSum / StaticHands - Character->GetActorLocation()).GetSafeNormal2D();
-		Movement->Velocity = FVector(0.f, 0.f, ClimbSpeed) + ToAnchors * 60.f;
-		return;
-	}
-
-	// Over the top: let go and tumble forward onto the ledge.
-	const double Now = GetWorld()->GetTimeSeconds();
-	for (FPMArmState& Arm : Arms)
-	{
-		ReleaseGrip(Arm, false);
-		Arm.RegripBlockedUntil = Now + 0.8;
-	}
-	bClimbing = false;
-	Movement->SetMovementMode(MOVE_Falling);
-	Movement->Velocity = Character->GetActorForwardVector() * 300.f + FVector(0.f, 0.f, 120.f);
 }
 
 // --- Camera --------------------------------------------------------------------------------------
@@ -886,7 +724,7 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 		return;
 	}
 
-	// Heavy smoothing on position, and only ~30% of the physical head's motion reaches the camera (GDD 2.1).
+	// Heavy smoothing on position, and only a little of the physical head's motion reaches the camera.
 	const FVector Head = Mesh->GetBoneLocation(PMRagdoll::Head);
 	if (!bCameraInitialised)
 	{
@@ -897,9 +735,7 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 
 	const FVector Eye = GetEyeLocation();
 	const FVector Forward = FRotator(0.f, Character->GetControlRotation().Yaw, 0.f).Vector();
-	// While bending over, ride the head further down so you look over your hands, not at your own back.
-	const float Follow = FMath::Lerp(CameraHeadFollow, 0.8f, Stoop);
-	FVector CameraLocation = FMath::Lerp(Eye, SmoothedHead, Follow) + Forward * CameraForwardOffset;
+	FVector CameraLocation = FMath::Lerp(Eye, SmoothedHead, CameraHeadFollow) + Forward * CameraForwardOffset;
 
 	// pm.ThirdPerson <distance>: look at your own mage from behind (debugging and fun).
 	const float ThirdPerson = PMRagdoll::CVarThirdPerson.GetValueOnGameThread();
@@ -932,24 +768,27 @@ namespace PMRagdollConsole
 		return World ? World->GetFirstPlayerController() : nullptr;
 	}
 
-	static FAutoConsoleCommandWithWorldAndArgs Hand(TEXT("pm.Hand"), TEXT("pm.Hand L|R 1|0 - hold or release a hand as if its mouse button were held."),
-		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
+	UPMActiveRagdollComponent* LocalBody(UWorld* World)
+	{
+		APlayerController* PC = LocalPC(World);
+		return (PC && PC->GetPawn()) ? PC->GetPawn()->FindComponentByClass<UPMActiveRagdollComponent>() : nullptr;
+	}
+
+	static FAutoConsoleCommandWithWorld Interact(TEXT("pm.Interact"), TEXT("pm.Interact - same as pressing E (pick up / drag / drop)."),
+		FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
 		{
-			APlayerController* PC = LocalPC(World);
-			UPMActiveRagdollComponent* Body = (PC && PC->GetPawn()) ? PC->GetPawn()->FindComponentByClass<UPMActiveRagdollComponent>() : nullptr;
-			if (!Body || Args.Num() < 1)
+			if (UPMActiveRagdollComponent* Body = LocalBody(World))
 			{
-				return;
+				Body->Interact();
 			}
-			const bool bHeld = Args.Num() < 2 || FCString::Atoi(*Args[1]) != 0;
-			const FString Which = Args[0].ToUpper();
-			if (Which.Contains(TEXT("L")) || Which == TEXT("B"))
+		}));
+
+	static FAutoConsoleCommandWithWorld Throw(TEXT("pm.Throw"), TEXT("pm.Throw - throw what you're carrying."),
+		FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
+		{
+			if (UPMActiveRagdollComponent* Body = LocalBody(World))
 			{
-				Body->SetHandHeld(EPMArm::Left, bHeld);
-			}
-			if (Which.Contains(TEXT("R")) || Which == TEXT("B"))
-			{
-				Body->SetHandHeld(EPMArm::Right, bHeld);
+				Body->Throw();
 			}
 		}));
 

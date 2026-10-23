@@ -58,9 +58,6 @@ private:
 	TObjectPtr<UTextBlock> CooldownText;
 
 	UPROPERTY()
-	TObjectPtr<UProgressBar> GripBars[2];
-
-	UPROPERTY()
 	TObjectPtr<UTextBlock> HandText;
 
 	UPROPERTY()

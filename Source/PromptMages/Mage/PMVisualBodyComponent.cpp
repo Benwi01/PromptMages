@@ -53,8 +53,8 @@ UPMVisualBodyComponent::UPMVisualBodyComponent()
 	Wear(TEXT("SM_Mage_Beard"), TEXT("DEF-head"), true);
 	Wear(TEXT("SM_Mage_RobeSkirt"), TEXT("DEF-spine"), false);
 	Wear(TEXT("SM_Mage_Belt"), TEXT("DEF-spine"), false);
-	Wear(TEXT("SM_Mage_CuffL"), TEXT("DEF-forearm_L"), false);
-	Wear(TEXT("SM_Mage_CuffR"), TEXT("DEF-forearm_R"), false);
+	Wear(TEXT("SM_Mage_CuffL"), TEXT("DEF-forearm_L"), true); // Right in front of the camera in first person.
+	Wear(TEXT("SM_Mage_CuffR"), TEXT("DEF-forearm_R"), true);
 
 	// Low-poly "mannequin demake" (Blender DEF- bones) -> UE5 mannequin.
 	auto Map = [this](const TCHAR* Dst, const TCHAR* Src) { BoneMap.Add(Dst, Src); };

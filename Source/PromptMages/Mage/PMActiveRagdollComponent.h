@@ -1,4 +1,4 @@
-// Prompt-Mages: the active-ragdoll body and two independent grabbing arms (GDD 2.1).
+// Prompt-Mages: the active-ragdoll body, its arms and E-to-pick-up (GDD 2.1).
 
 #pragma once
 
@@ -10,17 +10,9 @@
 class APlayerController;
 class UCharacterMovementComponent;
 class UInputComponent;
-class UPhysicsConstraintComponent;
 class UPhysicsHandleComponent;
 class UPrimitiveComponent;
 class USkeletalMeshComponent;
-
-UENUM(BlueprintType)
-enum class EPMArm : uint8
-{
-	Left,
-	Right
-};
 
 /** Runtime state for one arm. */
 USTRUCT()
@@ -29,48 +21,26 @@ struct FPMArmState
 	GENERATED_BODY()
 
 	FName HandBone;
-	FName UpperArmBone;
 	FName ClavicleBone;
-	FKey Button;
 	/** -1 for the left arm, +1 for the right. */
 	float Side = 1.f;
 
-	bool bButtonDown = false;
-
-	/** Pulls the hand toward the crosshair while the button is held. */
+	/** Pulls the hand to where it should be (hands-up pose, the held object, the wand). */
 	UPROPERTY()
 	TObjectPtr<UPhysicsHandleComponent> Reach;
-
-	/** Welds the hand to whatever it touched. */
-	UPROPERTY()
-	TObjectPtr<UPhysicsConstraintComponent> Grip;
-
-	TWeakObjectPtr<UPrimitiveComponent> GripTarget;
-	/** Grip point in the gripped component's local space. */
-	FVector GripLocalPoint = FVector::ZeroVector;
-	bool bGripStatic = false;
-
-	/** 0..1 grip stamina (GDD: about 8 s at max load). */
-	float Stamina = 1.f;
-	/** Current load as a fraction of what one arm can hold. */
-	float Load = 0.f;
-	double RegripBlockedUntil = 0.0;
-
-	bool IsGripping() const { return Grip != nullptr; }
 };
 
 /**
  * Turns the character into a "slightly drunk puppet that you mostly control" (GDD 2.1).
  *
- * Hybrid active ragdoll: the capsule + CharacterMovement still decides where the player goes,
- * while every body below the pelvis is simulated and pulled toward the animation pose by
- * physical-animation motors. Motors weaken in the air and while sprinting.
+ * Hybrid active ragdoll: the capsule + CharacterMovement decides where the player goes, while every body
+ * below the pelvis is simulated and pulled toward the animation pose by physical-animation motors.
  *
- * Arms: hold LMB / RMB to reach the left / right hand toward the crosshair (mouse wheel = reach).
- * A reaching hand grips whatever it touches. Grip drains per-arm stamina by load and slips when empty.
- * Gripping static geometry holds you back like a rope (hang and swing); two hands on an edge
- * while looking up pulls you onto it. Forces from held objects pull the body (two-way).
- * The camera rides the physical head with heavy smoothing and 30% of its bob.
+ * Arms are placed for you: in first person both hands stay up in view; holding something, they go to it;
+ * in third person (and for how others see you) they hang relaxed. The wand hand holds the wand out.
+ *
+ * E picks up what the crosshair is on: light things (up to CarryMaxKg) are carried in front of you,
+ * heavier ones (up to DragMaxKg) are dragged and slow you down. E again drops, LMB throws.
  */
 UCLASS(ClassGroup = (PromptMages), meta = (BlueprintSpawnableComponent))
 class PROMPTMAGES_API UPMActiveRagdollComponent : public UActorComponent
@@ -82,16 +52,18 @@ public:
 
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
-	bool IsGripping(EPMArm Arm) const { return GetArm(Arm).IsGripping(); }
-	bool IsReaching(EPMArm Arm) const;
-	float GetGripStamina(EPMArm Arm) const { return GetArm(Arm).Stamina; }
-	float GetLoad(EPMArm Arm) const { return GetArm(Arm).Load; }
-	bool IsClimbing() const { return bClimbing; }
-
-	/** Testing hook: press or release a hand as if its mouse button changed (pm.Hand console command). */
-	void SetHandHeld(EPMArm Arm, bool bHeld) { GetArm(Arm).bButtonDown = bHeld; }
+	bool IsHolding() const { return Held.IsValid(); }
+	bool IsDragging() const { return Held.IsValid() && bDragging; }
+	const FString& GetHeldName() const { return HeldName; }
+	float GetHeldMassKg() const { return HeldMass; }
+	/** "[E] Pick up Barrel (25 kg)" etc. for what the crosshair is on; empty when there's nothing. */
+	const FString& GetInteractPrompt() const { return InteractPrompt; }
 	bool IsSprinting() const { return bSprinting; }
-	float GetStoop() const { return Stoop; }
+
+	/** E: pick up / drag what the crosshair is on, or drop what you hold. */
+	void Interact();
+	/** LMB while holding: throw it. */
+	void Throw();
 
 	// --- Body ---
 
@@ -111,17 +83,13 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Body")
 	FPhysicalAnimationData ArmDrive;
 
-	/** Arm motors while reaching or gripping: weak, so the reach spring and held loads win. */
+	/** Arm motors while a hand is being placed: weaker, so the hand target wins. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Body")
-	FPhysicalAnimationData ReachingArmDrive;
+	FPhysicalAnimationData PlacedArmDrive;
 
 	/** Motor strength multiplier while airborne (GDD: motors drop during jumps). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Body")
-	float AirborneMotorScale = 0.35f;
-
-	/** Arm motor multiplier while sprinting (GDD: faster but arm motors weaken). */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Body")
-	float SprintArmScale = 0.5f;
+	float AirborneMotorScale = 0.6f;
 
 	// --- Movement ---
 
@@ -139,86 +107,69 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Movement")
 	float BrakingDeceleration = 650.f;
 
-	// --- Arms ---
+	// --- Hands ---
+
+	/** First-person hands-up pose: hand position from the eyes (forward, sideways, up), cm. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Hands")
+	FVector FirstPersonHandOffset = FVector(55.f, 22.f, -20.f);
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Hands")
+	float HandStiffness = 6000.f;
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Hands")
+	float HandDamping = 400.f;
 
 	/** Shoulder-to-hand reach in cm. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Hands")
 	float ArmLength = 70.f;
 
-	/** Distance from the camera the hands aim for; the mouse wheel changes it. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
-	float ReachDistance = 90.f;
+	// --- Pick up ---
 
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
-	FVector2D ReachDistanceRange = FVector2D(35.f, 140.f);
+	/** How far (cm from the eyes) E can reach. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float InteractRange = 250.f;
 
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
-	float ReachStiffness = 2500.f;
+	/** Up to this mass you carry it in front of you (GDD: 40 kg solo lift). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float CarryMaxKg = 40.f;
 
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
-	float ReachDamping = 250.f;
+	/** Up to this mass you can drag it; heavier needs friends. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float DragMaxKg = 250.f;
 
-	/** How close (cm) the hand must be to something to grip it. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
-	float GripRadius = 16.f;
+	/** Gap (cm) between the eyes and a carried object's near side; the mouse wheel changes it. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float HoldDistance = 45.f;
 
-	/** What one arm can hold at full stamina drain rate (two arms = 40 kg, the GDD's solo lift). */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
-	float MaxLoadPerArmKg = 20.f;
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	FVector2D HoldDistanceRange = FVector2D(25.f, 140.f);
 
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
-	float GripSecondsAtMaxLoad = 8.f;
+	/** Throw speed (cm/s) for a light object; heavier ones go slower. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float ThrowSpeed = 1100.f;
 
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
-	float GripRegenPerSecond = 0.35f;
+	/** Walk speed multiplier when dragging something at DragMaxKg. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float HeaviestDragSpeedScale = 0.35f;
 
-	/** Fraction of a held object's pull transferred to the body (two-way forces). */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
-	float ForceTransfer = 1.f;
+	// --- Crouch ---
 
-	// --- Reaching down ---
-
-	/** Reaching while looking further down than this (degrees) starts bending over. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
-	float StoopStartPitch = 20.f;
-
-	/** Looking this far down (degrees) while reaching is a full bend. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
-	float StoopFullPitch = 65.f;
-
-	/** Extra reach (cm) a full bend gives the hands. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
-	float StoopReach = 65.f;
-
-	/** Spine motor strength at a full bend, so the torso can fold forward. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
-	float StoopSpineScale = 0.1f;
-
-	/** How far (cm) the hips drop while crouching (Ctrl). The floppy legs fold under them. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
+	/** How far (cm) the hips drop while crouching (Ctrl). The relaxed legs fold under them. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Crouch")
 	float CrouchHipDrop = 45.f;
 
 	/** Leg motor strength while crouching. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Crouch")
 	float CrouchLegScale = 0.15f;
 
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Crouch")
 	float CrouchSpeed = 220.f;
-
-	// --- Climbing ---
-
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Climb")
-	float ClimbSpeed = 260.f;
-
-	/** Look at least this far up (degrees) with both hands on an edge to pull up. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Climb")
-	float ClimbLookUpPitch = 15.f;
 
 	// --- Camera ---
 
-	/** How much of the physical head's motion reaches the camera (GDD: about 30%). */
+	/** How much of the physical head's motion reaches the camera. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
-	float CameraHeadFollow = 0.3f;
+	float CameraHeadFollow = 0.15f;
 
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
 	float CameraSmoothSpeed = 10.f;
@@ -231,47 +182,44 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
-	FPMArmState& GetArm(EPMArm Arm) { return Arms[static_cast<int32>(Arm)]; }
-	const FPMArmState& GetArm(EPMArm Arm) const { return Arms[static_cast<int32>(Arm)]; }
-
 	void SetupBody();
 	void SetupLocalView();
 	void TryBindInput();
 	APlayerController* GetLocalPC() const;
-	bool GetView(FVector& OutLocation, FRotator& OutRotation) const;
 	bool IsSpellbookOpen() const;
-	/** True for the right arm while the wand is drawn: it holds the wand instead of grabbing. */
-	bool IsWandHand(const FPMArmState& Arm) const;
+	bool IsWandOut() const;
+	/** First person on this machine: the hands-up pose is shown (others see relaxed arms). */
+	bool IsLocalFirstPerson() const;
 
-	void OnLeftPressed()   { Arms[0].bButtonDown = true; }
-	void OnLeftReleased()  { Arms[0].bButtonDown = false; }
-	void OnRightPressed()  { Arms[1].bButtonDown = true; }
-	void OnRightReleased() { Arms[1].bButtonDown = false; }
-	void OnReachOut();
-	void OnReachIn();
-	void OnSprintPressed();
-	void OnSprintReleased();
+	void OnInteractPressed() { Interact(); }
+	void OnThrowPressed();
+	void OnHoldFarther();
+	void OnHoldCloser();
+	void OnSprintPressed() { bSprinting = true; }
+	void OnSprintReleased() { bSprinting = false; }
 	void OnCrouchPressed();
 	void OnCrouchReleased();
 
-	void UpdateStoopAndCrouch(float DeltaTime);
-	void ApplySpineAndLegDrives();
-	FVector GetReachTarget(const FPMArmState& Arm, const FVector& ViewLocation, const FRotator& ViewRotation) const;
 	/** Where the mage's eyes are (not the camera, which may be pulled back in third person). */
 	FVector GetEyeLocation() const;
-
-	void UpdateArm(FPMArmState& Arm, float DeltaTime, const FVector& ViewLocation, const FRotator& ViewRotation);
-	void StartReach(FPMArmState& Arm);
-	void StopReach(FPMArmState& Arm);
-	void TryGrip(FPMArmState& Arm);
-	void ReleaseGrip(FPMArmState& Arm, bool bSlipped);
-	void ApplyArmDrive(const FPMArmState& Arm);
+	FRotator GetViewRotation() const;
 	FVector GetShoulderLocation(const FPMArmState& Arm) const;
-	FVector GetGripAnchor(const FPMArmState& Arm) const;
+
+	/** What E would pick up right now (the welded root of a spawned object), or null. */
+	UPrimitiveComponent* FindInteractTarget(FVector& OutHitPoint) const;
+	void PickUp(UPrimitiveComponent* Target, const FVector& HitPoint);
+	void Drop();
 
 	void UpdateMotors(float DeltaTime);
-	void UpdateForcesAndLeash(float DeltaTime);
-	void UpdateClimb(float DeltaTime);
+	void UpdateCrouch(float DeltaTime);
+	void ApplyBodyDrives();
+	void ApplyArmDrive(const FPMArmState& Arm);
+	void UpdateHeld(float DeltaTime);
+	void UpdateMoveSpeed();
+	void UpdateInteractPrompt();
+	void UpdateArms();
+	/** Pull a hand to Target (or let it hang when bPlace is false). */
+	void PlaceHand(FPMArmState& Arm, bool bPlace, const FVector& Target);
 	void UpdateCamera(float DeltaTime);
 	void Toast(const FString& Message) const;
 
@@ -290,19 +238,34 @@ private:
 	UPROPERTY()
 	FPMArmState Arms[2];
 
+	/** Holds the carried or dragged object. */
+	UPROPERTY()
+	TObjectPtr<UPhysicsHandleComponent> HoldHandle;
+
 	TWeakObjectPtr<APlayerController> BoundPC;
+	TWeakObjectPtr<UPrimitiveComponent> Held;
+	FString HeldName;
+	float HeldMass = 0.f;
+	bool bDragging = false;
+	/** Carried object's rotation relative to the view's yaw, kept while carrying. */
+	FQuat HeldRelativeRotation = FQuat::Identity;
+	/** Rough radius (cm) of the carried object, to hold it clear of the face and place the hands. */
+	float HeldRadius = 20.f;
+	/** Dragged: the grab point in the object's local space, and how far ahead / how high we hold it. */
+	FVector DragLocalPoint = FVector::ZeroVector;
+	float DragDistance = 100.f;
+	float DragHeight = 50.f;
+	FString InteractPrompt;
 
 	bool bBodyReady = false;
 	bool bSprinting = false;
-	bool bClimbing = false;
-	bool bArmsLocked = false;
 	float MotorScale = 1.f;
+	/** pm.BodyStiffness / pm.NeckDrive values the motors were last set with (re-applied when they change). */
+	float AppliedStiffness = -1.f;
+	float AppliedNeckDrive = -1.f;
 	bool bCameraInitialised = false;
 	FVector SmoothedHead = FVector::ZeroVector;
 
-	/** 0..1 how far bent over we are. */
-	float Stoop = 0.f;
-	float AppliedStoop = 0.f;
 	/** Current hip drop (cm), eased toward CrouchHipDrop while crouched. */
 	float HipDrop = 0.f;
 	bool bLegsRelaxed = false;
