@@ -524,6 +524,7 @@ void UPMActiveRagdollComponent::Interact()
 
 void UPMActiveRagdollComponent::PickUp(UPrimitiveComponent* Target, const FVector& HitPoint)
 {
+	NoteArmUse();
 	Held = Target;
 	HeldMass = Target->GetMass();
 	HeldName = PMRagdoll::NameOf(Target);
@@ -560,6 +561,10 @@ void UPMActiveRagdollComponent::PickUp(UPrimitiveComponent* Target, const FVecto
 
 void UPMActiveRagdollComponent::Drop()
 {
+	if (Held.IsValid())
+	{
+		NoteArmUse(); // Hands stay up a moment after letting go.
+	}
 	if (HoldHandle)
 	{
 		HoldHandle->ReleaseComponent();
@@ -691,6 +696,7 @@ void UPMActiveRagdollComponent::Punch()
 	PunchArm = IsWandOut() ? 0 : 1 - PunchArm;
 	PunchTime = 0.f;
 	bPunchLanded = false;
+	NoteArmUse();
 }
 
 void UPMActiveRagdollComponent::UpdatePunch(float DeltaTime)
@@ -801,7 +807,8 @@ void UPMActiveRagdollComponent::UpdateArms()
 	const FVector Forward = View.GetUnitAxis(EAxis::X);
 	const FVector Right = View.GetUnitAxis(EAxis::Y);
 	const FVector Up = View.GetUnitAxis(EAxis::Z);
-	const bool bFirstPerson = IsLocalFirstPerson();
+	// Fists stay up for a while after you punch or use your hands, then the arms relax (both views).
+	const bool bGuardUp = GetWorld()->GetTimeSeconds() - LastArmUseTime < GuardHoldSeconds;
 	const bool bWand = IsWandOut();
 	const UPrimitiveComponent* Target = Held.Get();
 	UPMVisualBodyComponent* VisualBody = GetOwner()->FindComponentByClass<UPMVisualBodyComponent>();
@@ -846,12 +853,12 @@ void UPMActiveRagdollComponent::UpdateArms()
 			SetFist(i, false);
 			continue;
 		}
-		// First person: hands up in view, ready. Third person (and how others see you): arms hang.
-		if (bFirstPerson)
+		// Just been fighting or handling things: fists up in a guard. Otherwise the arms hang relaxed.
+		if (bGuardUp)
 		{
 			const FVector& O = FirstPersonHandOffset;
 			PlaceHand(Arm, true, Eye + Forward * O.X + Right * Arm.Side * O.Y + Up * O.Z);
-			SetFist(i, true); // Fists up, ready.
+			SetFist(i, true);
 			continue;
 		}
 		PlaceHand(Arm, false, FVector::ZeroVector);

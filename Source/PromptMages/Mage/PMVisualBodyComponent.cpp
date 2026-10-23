@@ -306,18 +306,24 @@ void UPMVisualBodyComponent::BuildFingerCurls()
 			Palm = -Palm;
 		}
 		const FQuat HandRest = DstRefComponent[HandBones[Hand]].GetRotation();
-		// Turning about Along x Palm swings the fingers toward the palm.
-		const FVector FingerAxis = HandRest.UnrotateVector(FVector::CrossProduct(Along, Palm).GetSafeNormal());
-		const FVector ThumbDir = (Pos(Thumb2) - Pos(Thumb1)).GetSafeNormal();
-		const FVector ThumbAxis = HandRest.UnrotateVector(FVector::CrossProduct(ThumbDir, Palm).GetSafeNormal());
+		auto InHand = [&](const FQuat& Turn) { return (HandRest.Inverse() * Turn * HandRest).GetNormalized(); };
+		auto Bend = [](const FVector& Axis, float Degrees) { return FQuat(Axis, FMath::DegreesToRadians(Degrees)); };
 
-		// Degrees each joint bends, counted from the knuckle (each joint adds to the ones before it).
-		const float FingerBend[3] = { 80.f, 95.f, 60.f };
-		const float ThumbBend[3] = { 15.f, 30.f, 35.f };
+		// Fingers: turning about Along x Palm swings them toward the palm. Degrees per joint, counted from the knuckle.
+		const FVector FingerAxis = FVector::CrossProduct(Along, Palm).GetSafeNormal();
+		const float FingerBend[3] = { 80.f, 175.f, 235.f };
+
+		// Thumb: swing it across the front of the curled index and middle fingers, then wrap the tip a little.
+		const FVector ThumbDir = (Pos(Thumb2) - Pos(Thumb1)).GetSafeNormal();
+		const FVector FingerFront = (Pos(Index1) + Pos(Middle1)) * 0.5f + Palm * 3.f - Along * 1.f;
+		const FVector ThumbAim = (FingerFront - Pos(Thumb1)).GetSafeNormal();
+		const FQuat ThumbSwing = FQuat::FindBetweenNormals(ThumbDir, ThumbAim);
+		const FVector ThumbWrapAxis = FVector::CrossProduct(ThumbAim, Palm).GetSafeNormal();
+		const FQuat ThumbTurns[3] = { ThumbSwing, Bend(ThumbWrapAxis, 20.f) * ThumbSwing, Bend(ThumbWrapAxis, 45.f) * ThumbSwing };
+
 		for (const TCHAR* Finger : { TEXT("index"), TEXT("middle"), TEXT("ring"), TEXT("pinky"), TEXT("thumb") })
 		{
 			const bool bThumb = FCString::Strcmp(Finger, TEXT("thumb")) == 0;
-			float Total = 0.f;
 			for (int32 Joint = 1; Joint <= 3; ++Joint)
 			{
 				const int32 Index = Bone(*FString::Printf(TEXT("DEF-%s%s.%02d"), bThumb ? TEXT("") : TEXT("f_"), Finger, Joint));
@@ -325,11 +331,9 @@ void UPMVisualBodyComponent::BuildFingerCurls()
 				{
 					break;
 				}
-				Total += (bThumb ? ThumbBend : FingerBend)[Joint - 1];
 				FFingerCurl& Curl = Curls.AddDefaulted_GetRef();
 				Curl.Hand = Hand;
-				Curl.AxisInHand = bThumb ? ThumbAxis : FingerAxis;
-				Curl.Angle = FMath::DegreesToRadians(Total);
+				Curl.TurnInHand = InHand(bThumb ? ThumbTurns[Joint - 1] : Bend(FingerAxis, FingerBend[Joint - 1]));
 				CurlOfBone[Index] = Curls.Num() - 1;
 			}
 		}
@@ -421,8 +425,10 @@ void UPMVisualBodyComponent::CopyPose()
 		{
 			return;
 		}
-		const FVector Axis = TargetComponent[HandBones[Curl.Hand]].GetRotation().RotateVector(Curl.AxisInHand);
-		TargetComponent[i].SetRotation((FQuat(Axis, Curl.Angle * Amount) * TargetComponent[i].GetRotation()).GetNormalized());
+		// The turn was worked out in the hand's own space: carry it over to where the hand is now.
+		const FQuat HandNow = TargetComponent[HandBones[Curl.Hand]].GetRotation();
+		const FQuat Turn = HandNow * FQuat::Slerp(FQuat::Identity, Curl.TurnInHand, Amount) * HandNow.Inverse();
+		TargetComponent[i].SetRotation((Turn * TargetComponent[i].GetRotation()).GetNormalized());
 	};
 
 	for (const FBoneLink& Link : Links)

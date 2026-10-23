@@ -36,8 +36,8 @@ struct FPMArmState
  * Hybrid active ragdoll: the capsule + CharacterMovement decides where the player goes, while every body
  * below the pelvis is simulated and pulled toward the animation pose by physical-animation motors.
  *
- * Arms are placed for you: in first person both hands stay up in view; holding something, they go to it;
- * in third person (and for how others see you) they hang relaxed. The wand hand holds the wand out.
+ * Arms are placed for you: they hang relaxed until you punch or handle something, then the fists come up in a
+ * guard for GuardHoldSeconds before relaxing again. Holding something, they go to it. The wand hand holds the wand.
  *
  * LMB punches (alternating fists): it knocks objects away and shoves other characters.
  * E picks up what the crosshair is on: light things (up to CarryMaxKg) are carried in front of you,
@@ -178,6 +178,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
 	float PunchFullSpeedKg = 20.f;
 
+	/** After punching (or using the hands), fists stay up in a guard this long, then the arms relax. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	float GuardHoldSeconds = 3.f;
+
 	/** How hard a punch shoves another character (cm/s). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
 	float PunchKnockback = 550.f;
@@ -294,6 +298,9 @@ private:
 	float PunchTime = -1.f;
 	int32 PunchArm = 0;
 	bool bPunchLanded = false;
+	/** World time the arms were last used (punch, pick up, drop, throw); the guard stays up for a while after. */
+	double LastArmUseTime = -1000.0;
+	void NoteArmUse() { LastArmUseTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0; }
 
 	bool bBodyReady = false;
 	bool bSprinting = false;

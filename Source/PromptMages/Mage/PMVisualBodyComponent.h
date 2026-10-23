@@ -94,9 +94,8 @@ private:
 	struct FFingerCurl
 	{
 		int32 Hand = 0;
-		/** Bend axis in the hand's own space, and how far (radians, counted from the knuckle) at a full fist. */
-		FVector AxisInHand = FVector::ZeroVector;
-		float Angle = 0.f;
+		/** Extra turn of this joint at a full fist, in the hand's own space (counted from the knuckle). */
+		FQuat TurnInHand = FQuat::Identity;
 	};
 
 	void BuildLinks();
