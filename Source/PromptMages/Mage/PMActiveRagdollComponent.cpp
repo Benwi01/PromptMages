@@ -230,6 +230,25 @@ void UPMActiveRagdollComponent::TryBindInput()
 	ArmInput->BindKey(EKeys::LeftShift, IE_Released, this, &UPMActiveRagdollComponent::OnSprintReleased);
 	ArmInput->BindKey(EKeys::LeftControl, IE_Pressed, this, &UPMActiveRagdollComponent::OnCrouchPressed);
 	ArmInput->BindKey(EKeys::LeftControl, IE_Released, this, &UPMActiveRagdollComponent::OnCrouchReleased);
+
+	// V: switch between first and third person (remembers the third-person distance).
+	FInputKeyBinding ViewToggle(FInputChord(EKeys::V), IE_Pressed);
+	ViewToggle.KeyDelegate.GetDelegateForManualSet().BindLambda([this]()
+	{
+		if (IsSpellbookOpen())
+		{
+			return;
+		}
+		static float LastDistance = 250.f;
+		IConsoleVariable* ThirdPerson = PMRagdoll::CVarThirdPerson.AsVariable();
+		const float Current = ThirdPerson->GetFloat();
+		if (Current > 0.f)
+		{
+			LastDistance = Current;
+		}
+		ThirdPerson->Set(Current > 0.f ? 0.f : LastDistance, ECVF_SetByConsole);
+	});
+	ArmInput->KeyBindings.Add(ViewToggle);
 	PC->PushInputComponent(ArmInput);
 
 	SetupLocalView();
@@ -366,7 +385,7 @@ void UPMActiveRagdollComponent::ApplyArmDrive(const FPMArmState& Arm)
 	{
 		return;
 	}
-	const bool bPlaced = Arm.Reach && Arm.Reach->GetGrabbedComponent();
+	const bool bPlaced = Arm.Reach && Arm.Reach->GetGrabbedComponent() && Arm.Reach->LinearStiffness > 0.f;
 	const float Stiffness = FMath::Max(AppliedStiffness, 0.f);
 	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(Arm.ClavicleBone,
 		PMRagdoll::Scaled(bPlaced ? PlacedArmDrive : ArmDrive, Stiffness), true);
@@ -650,12 +669,19 @@ void UPMActiveRagdollComponent::UpdateInteractPrompt()
 
 void UPMActiveRagdollComponent::PlaceHand(FPMArmState& Arm, bool bPlace, const FVector& Target)
 {
-	const bool bPlaced = Arm.Reach->GetGrabbedComponent() != nullptr;
+	// The handle holds the hand all the time; a relaxed arm just has a zero-strength spring.
+	// (Releasing and re-grabbing the same hand doesn't take: the hand stayed limp after switching views.)
+	if (!Arm.Reach->GetGrabbedComponent())
+	{
+		Arm.Reach->GrabComponentAtLocation(Mesh, Arm.HandBone, Mesh->GetBoneLocation(Arm.HandBone));
+	}
+	const bool bPlaced = Arm.Reach->LinearStiffness > 0.f;
 	if (bPlace)
 	{
 		if (!bPlaced)
 		{
-			Arm.Reach->GrabComponentAtLocation(Mesh, Arm.HandBone, Mesh->GetBoneLocation(Arm.HandBone));
+			Arm.Reach->SetLinearStiffness(HandStiffness);
+			Arm.Reach->SetLinearDamping(HandDamping);
 			ApplyArmDrive(Arm);
 		}
 		// Never ask for more than an arm's length from the shoulder.
@@ -669,7 +695,9 @@ void UPMActiveRagdollComponent::PlaceHand(FPMArmState& Arm, bool bPlace, const F
 	}
 	else if (bPlaced)
 	{
-		Arm.Reach->ReleaseComponent();
+		Arm.Reach->SetLinearStiffness(0.f);
+		Arm.Reach->SetLinearDamping(0.f);
+		Arm.Reach->SetTargetLocation(Mesh->GetBoneLocation(Arm.HandBone));
 		ApplyArmDrive(Arm);
 	}
 }

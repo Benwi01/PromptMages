@@ -127,7 +127,7 @@ void UPMHudWidget::BuildTree()
 	Place(ManaBar, FAnchors(0.5f, 1.f), FVector2D(0.5f, 1.f), FMargin(0.f, -50.f, 320.f, 10.f), false);
 
 	// Controls hint, bottom left.
-	HelpText = MakeText(TEXT("Tab  Spellbook     E  Pick up / drop     LMB  Throw     Wheel  Hold distance     Shift  Sprint     Ctrl  Crouch     Q  Wand (RMB cast, 1-4 spell)"), 13, FLinearColor(1.f, 1.f, 1.f, 0.6f));
+	HelpText = MakeText(TEXT("Tab  Spellbook     E  Pick up / drop     LMB  Throw     Wheel  Hold distance     Shift  Sprint     Ctrl  Crouch     V  First / third person     Q  Wand (RMB cast, 1-4 spell)"), 13, FLinearColor(1.f, 1.f, 1.f, 0.6f));
 	HelpText->SetAutoWrapText(false);
 	HelpText->SetShadowOffset(FVector2D(1.f, 1.f));
 	Place(HelpText, FAnchors(0.f, 1.f), FVector2D(0.f, 1.f), FMargin(24.f, -16.f, 0.f, 0.f), true);
