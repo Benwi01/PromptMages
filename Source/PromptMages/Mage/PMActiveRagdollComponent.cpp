@@ -57,6 +57,24 @@ namespace PMRagdoll
 		return D;
 	}
 
+	/** Half the size of a component's own box along a world direction (uses its real rotated shape, not a bounding ball). */
+	float HalfSizeAlong(const UPrimitiveComponent* Comp, const FVector& Direction)
+	{
+		const FBoxSphereBounds Local = Comp->CalcBounds(FTransform::Identity);
+		const FTransform& Xf = Comp->GetComponentTransform();
+		const FVector E = Local.BoxExtent * Xf.GetScale3D().GetAbs();
+		const FQuat Q = Xf.GetRotation();
+		return FMath::Abs(FVector::DotProduct(Direction, Q.GetAxisX())) * E.X
+			+ FMath::Abs(FVector::DotProduct(Direction, Q.GetAxisY())) * E.Y
+			+ FMath::Abs(FVector::DotProduct(Direction, Q.GetAxisZ())) * E.Z;
+	}
+
+	/** Centre of a component's own box in the world. */
+	FVector BoxCentre(const UPrimitiveComponent* Comp)
+	{
+		return Comp->GetComponentTransform().TransformPosition(Comp->CalcBounds(FTransform::Identity).Origin);
+	}
+
 	/** Name shown in prompts: a spawned object's prompt name, else the actor's label. */
 	FString NameOf(const UPrimitiveComponent* Comp)
 	{
@@ -541,7 +559,7 @@ void UPMActiveRagdollComponent::PickUp(UPrimitiveComponent* Target, const FVecto
 		HoldHandle->SetAngularStiffness(1500.f);
 		HoldHandle->SetAngularDamping(500.f);
 		HoldHandle->SetInterpolationSpeed(30.f);
-		HoldHandle->GrabComponentAtLocationWithRotation(Target, NAME_None, Target->Bounds.Origin, Target->GetComponentRotation());
+		HoldHandle->GrabComponentAtLocationWithRotation(Target, NAME_None, PMRagdoll::BoxCentre(Target), Target->GetComponentRotation());
 	}
 	else
 	{
@@ -615,9 +633,12 @@ void UPMActiveRagdollComponent::UpdateHeld(float DeltaTime)
 	FVector Current;
 	if (!bDragging)
 	{
-		// A little below the line of sight, so you can still see past it.
-		Goal = Eye + View.Vector() * (HoldDistance + HeldRadius) - FRotationMatrix(View).GetUnitAxis(EAxis::Z) * (HeldRadius * 0.6f);
-		Current = Target->Bounds.Origin;
+		// Its near side HoldDistance from the eyes, a little below the line of sight so you can see past it.
+		const FRotationMatrix Axes(View);
+		const FVector Fwd = Axes.GetUnitAxis(EAxis::X);
+		const FVector Up = Axes.GetUnitAxis(EAxis::Z);
+		Goal = Eye + Fwd * (HoldDistance + PMRagdoll::HalfSizeAlong(Target, Fwd)) - Up * (PMRagdoll::HalfSizeAlong(Target, Up) * 0.5f);
+		Current = PMRagdoll::BoxCentre(Target);
 		HoldHandle->SetTargetLocationAndRotation(Goal, (ViewYaw.Quaternion() * HeldRelativeRotation).Rotator());
 	}
 	else
@@ -848,7 +869,8 @@ void UPMActiveRagdollComponent::UpdateArms()
 		{
 			const FVector Grip = bDragging
 				? Target->GetComponentTransform().TransformPosition(DragLocalPoint) + Right * Arm.Side * 12.f
-				: Target->Bounds.Origin + Right * Arm.Side * (HeldRadius + 6.f);
+				: PMRagdoll::BoxCentre(Target) + Right * Arm.Side * (PMRagdoll::HalfSizeAlong(Target, Right) + 4.f)
+					- Forward * (PMRagdoll::HalfSizeAlong(Target, Forward) * 0.4f);
 			PlaceHand(Arm, true, Grip);
 			SetFist(i, false);
 			continue;
@@ -910,6 +932,7 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 		Camera->bUsePawnControlRotation = true;
 	}
 	Camera->SetWorldLocation(CameraLocation);
+	Camera->SetFieldOfView(FieldOfView);
 }
 
 // --- Console commands for testing ----------------------------------------------------------------

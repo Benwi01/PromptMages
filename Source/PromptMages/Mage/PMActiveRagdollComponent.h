@@ -147,7 +147,7 @@ public:
 
 	/** Gap (cm) between the eyes and a carried object's near side; the mouse wheel changes it. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
-	float HoldDistance = 45.f;
+	float HoldDistance = 60.f;
 
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
 	FVector2D HoldDistanceRange = FVector2D(25.f, 140.f);
@@ -208,6 +208,10 @@ public:
 	/** How much of the physical head's motion reaches the camera. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
 	float CameraHeadFollow = 0.15f;
+
+	/** Field of view (degrees, horizontal). Wider shows more of your hands and what you carry. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
+	float FieldOfView = 100.f;
 
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
 	float CameraSmoothSpeed = 10.f;
