@@ -10,6 +10,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "PromptMages.h"
 #include "Spellbook/PMSpellcasterComponent.h"
+#include "Mage/PMActiveRagdollComponent.h"
 
 APromptMagesCharacter::APromptMagesCharacter()
 {
@@ -36,6 +37,9 @@ APromptMagesCharacter::APromptMagesCharacter()
 
 	// Prompt-Mages: Spellbook, casting and grabbing
 	Spellcaster = CreateDefaultSubobject<UPMSpellcasterComponent>(TEXT("Spellcaster"));
+
+	// Prompt-Mages: active-ragdoll body and the two grabbing arms
+	ActiveRagdoll = CreateDefaultSubobject<UPMActiveRagdollComponent>(TEXT("ActiveRagdoll"));
 
 	// configure the character comps
 	GetMesh()->SetOwnerNoSee(true);

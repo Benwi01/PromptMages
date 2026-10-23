@@ -35,6 +35,10 @@ class APromptMagesCharacter : public ACharacter
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	class UPMSpellcasterComponent* Spellcaster;
 
+	/** Prompt-Mages: active-ragdoll body and the two grabbing arms */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	class UPMActiveRagdollComponent* ActiveRagdoll;
+
 protected:
 
 	/** Jump Input Action */

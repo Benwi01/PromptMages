@@ -28,6 +28,7 @@ public class PromptMages : ModuleRules
 		PublicIncludePaths.AddRange(new string[] {
 			"PromptMages",
 			"PromptMages/Spellbook",
+			"PromptMages/Mage",
 			"PromptMages/Variant_Horror",
 			"PromptMages/Variant_Horror/UI",
 			"PromptMages/Variant_Shooter",

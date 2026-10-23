@@ -1,6 +1,7 @@
 // Prompt-Mages: the in-game HUD and the Spellbook parchment (GDD 2.3), built in C++.
 
 #include "PMHudWidget.h"
+#include "PMActiveRagdollComponent.h"
 #include "PMPromptParser.h"
 #include "PMSpellcasterComponent.h"
 #include "PMSpellSubsystem.h"
@@ -100,10 +101,22 @@ void UPMHudWidget::BuildTree()
 	CooldownText->SetShadowOffset(FVector2D(1.f, 1.f));
 	Place(CooldownText, FAnchors(0.5f, 0.5f), FVector2D(0.5f, 0.f), FMargin(0.f, 24.f, 0.f, 0.f), true);
 
-	GripBar = WidgetTree->ConstructWidget<UProgressBar>(UProgressBar::StaticClass());
-	GripBar->SetFillColorAndOpacity(FLinearColor(0.95f, 0.75f, 0.2f));
-	GripBar->SetVisibility(ESlateVisibility::Collapsed);
-	Place(GripBar, FAnchors(0.5f, 0.5f), FVector2D(0.5f, 0.f), FMargin(0.f, 46.f, 120.f, 8.f), false);
+	// One grip-stamina bar per hand, either side of the crosshair (left hand = LMB, right hand = RMB).
+	for (int32 i = 0; i < 2; ++i)
+	{
+		GripBars[i] = WidgetTree->ConstructWidget<UProgressBar>(UProgressBar::StaticClass());
+		GripBars[i]->SetFillColorAndOpacity(FLinearColor(0.95f, 0.75f, 0.2f));
+		GripBars[i]->SetBarFillType(EProgressBarFillType::BottomToTop);
+		GripBars[i]->SetVisibility(ESlateVisibility::Collapsed);
+		const float X = i == 0 ? -46.f : 46.f;
+		Place(GripBars[i], FAnchors(0.5f, 0.5f), FVector2D(0.5f, 0.5f), FMargin(X, 0.f, 8.f, 56.f), false);
+	}
+
+	// What each hand is doing, under the crosshair.
+	HandText = MakeText(FString(), 13, HudWhite);
+	HandText->SetAutoWrapText(false);
+	HandText->SetShadowOffset(FVector2D(1.f, 1.f));
+	Place(HandText, FAnchors(0.5f, 0.5f), FVector2D(0.5f, 0.f), FMargin(0.f, 46.f, 0.f, 0.f), true);
 
 	// Team status, top left.
 	StatusText = MakeText(FString(), 18, HudWhite);
@@ -112,7 +125,7 @@ void UPMHudWidget::BuildTree()
 	Place(StatusText, FAnchors(0.f, 0.f), FVector2D(0.f, 0.f), FMargin(24.f, 20.f, 0.f, 0.f), true);
 
 	// Controls hint, bottom left.
-	HelpText = MakeText(TEXT("Tab  Spellbook     Hold LMB  Grab     Wheel  Reach"), 13, FLinearColor(1.f, 1.f, 1.f, 0.6f));
+	HelpText = MakeText(TEXT("Tab  Spellbook     Hold LMB / RMB  Left / right hand     Both + look up  Climb     Wheel  Reach     Shift  Sprint"), 13, FLinearColor(1.f, 1.f, 1.f, 0.6f));
 	HelpText->SetAutoWrapText(false);
 	HelpText->SetShadowOffset(FVector2D(1.f, 1.f));
 	Place(HelpText, FAnchors(0.f, 1.f), FVector2D(0.f, 1.f), FMargin(24.f, -16.f, 0.f, 0.f), true);
@@ -369,9 +382,29 @@ void UPMHudWidget::RefreshStatus()
 	const float Cooldown = C->GetCooldownRemaining();
 	CooldownText->SetText(Cooldown > 0.f ? FText::FromString(FString::Printf(TEXT("quill %.1fs"), Cooldown)) : FText::GetEmpty());
 
-	const bool bShowGrip = C->IsGrabbing() || C->GetGripStamina() < 0.999f;
-	GripBar->SetVisibility(bShowGrip ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
-	GripBar->SetPercent(C->GetGripStamina());
+	// Hands: grip stamina bars and a short status line.
+	const UPMActiveRagdollComponent* Body = C->GetOwner()->FindComponentByClass<UPMActiveRagdollComponent>();
+	TArray<FString> HandStates;
+	for (int32 i = 0; i < 2; ++i)
+	{
+		const EPMArm Arm = i == 0 ? EPMArm::Left : EPMArm::Right;
+		const bool bGripping = Body && Body->IsGripping(Arm);
+		const float Stamina = Body ? Body->GetGripStamina(Arm) : 1.f;
+		const bool bShow = bGripping || Stamina < 0.999f;
+		GripBars[i]->SetVisibility(bShow ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		GripBars[i]->SetPercent(Stamina);
+		GripBars[i]->SetFillColorAndOpacity(Stamina < 0.3f ? FLinearColor(0.9f, 0.15f, 0.1f) : FLinearColor(0.95f, 0.75f, 0.2f));
+		if (bGripping)
+		{
+			HandStates.Add(FString::Printf(TEXT("%s: holding%s"), i == 0 ? TEXT("L") : TEXT("R"),
+				Body->GetLoad(Arm) > 1.f ? TEXT(" (too heavy!)") : TEXT("")));
+		}
+	}
+	if (Body && Body->IsClimbing())
+	{
+		HandStates.Add(TEXT("climbing"));
+	}
+	HandText->SetText(FText::FromString(FString::Join(HandStates, TEXT("   "))));
 
 	// Messages fade out after a few seconds.
 	const double Now = GetWorld()->GetTimeSeconds();

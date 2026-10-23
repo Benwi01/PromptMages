@@ -1,4 +1,4 @@
-// Prompt-Mages: lets a player open the Spellbook, cast prompts and grab objects.
+// Prompt-Mages: lets a player open the Spellbook and cast prompts.
 
 #include "PMSpellcasterComponent.h"
 #include "PMHudWidget.h"
@@ -13,7 +13,6 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "PhysicsEngine/PhysicsHandleComponent.h"
 
 UPMSpellcasterComponent::UPMSpellcasterComponent()
 {
@@ -73,17 +72,7 @@ void UPMSpellcasterComponent::TryInitLocalPlayer()
 	CasterInput = NewObject<UInputComponent>(GetOwner(), TEXT("PMSpellcasterInput"));
 	CasterInput->RegisterComponent();
 	CasterInput->BindKey(EKeys::Tab, IE_Pressed, this, &UPMSpellcasterComponent::OnTabPressed);
-	CasterInput->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &UPMSpellcasterComponent::OnGrabPressed);
-	CasterInput->BindKey(EKeys::LeftMouseButton, IE_Released, this, &UPMSpellcasterComponent::OnGrabReleased);
-	CasterInput->BindKey(EKeys::MouseScrollUp, IE_Pressed, this, &UPMSpellcasterComponent::OnReachOut);
-	CasterInput->BindKey(EKeys::MouseScrollDown, IE_Pressed, this, &UPMSpellcasterComponent::OnReachIn);
 	PC->PushInputComponent(CasterInput);
-
-	if (!Handle)
-	{
-		Handle = NewObject<UPhysicsHandleComponent>(GetOwner(), TEXT("PMGrabHandle"));
-		Handle->RegisterComponent();
-	}
 
 	if (!TargetMarker)
 	{
@@ -124,29 +113,6 @@ void UPMSpellcasterComponent::TickComponent(float DeltaTime, ELevelTick TickType
 	{
 		TryInitLocalPlayer();
 		return;
-	}
-
-	// Grab: move the hand target with the view, drain grip stamina by load.
-	if (IsGrabbing())
-	{
-		FVector ViewLoc;
-		FRotator ViewRot;
-		if (GetView(ViewLoc, ViewRot))
-		{
-			Handle->SetTargetLocation(ViewLoc + ViewRot.Vector() * HoldDistance);
-		}
-
-		const float Load = FMath::Clamp(HeldMassKg / MaxSoloLiftKg, 0.05f, 1.f);
-		GripStamina -= DeltaTime * Load / GripSecondsAtMaxLoad;
-		if (GripStamina <= 0.f)
-		{
-			GripStamina = 0.f;
-			Release(true);
-		}
-	}
-	else
-	{
-		GripStamina = FMath::Min(1.f, GripStamina + DeltaTime * 0.35f);
 	}
 }
 
@@ -366,96 +332,4 @@ FString UPMSpellcasterComponent::RecallPrompt(int32 Direction)
 	}
 	HistoryIndex = FMath::Clamp(HistoryIndex + Direction, -1, History.Num() - 1);
 	return HistoryIndex >= 0 ? History[HistoryIndex] : FString();
-}
-
-// --- Grab ----------------------------------------------------------------------------------------
-
-bool UPMSpellcasterComponent::IsGrabbing() const
-{
-	return Handle && Handle->GetGrabbedComponent() != nullptr;
-}
-
-void UPMSpellcasterComponent::OnGrabPressed()
-{
-	if (bSpellbookOpen || IsGrabbing() || !Handle)
-	{
-		return;
-	}
-
-	FVector ViewLoc;
-	FRotator ViewRot;
-	if (!GetView(ViewLoc, ViewRot))
-	{
-		return;
-	}
-
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMGrab), false, GetOwner());
-	FHitResult Hit;
-	if (!GetWorld()->LineTraceSingleByChannel(Hit, ViewLoc, ViewLoc + ViewRot.Vector() * GrabReach, ECC_Visibility, Params))
-	{
-		UE_LOG(LogPromptMages, Verbose, TEXT("Grab: nothing within %.0f cm"), GrabReach);
-		return;
-	}
-	UE_LOG(LogPromptMages, Verbose, TEXT("Grab: hit %s at %.0f cm"), *GetNameSafe(Hit.GetActor()), Hit.Distance);
-
-	UPrimitiveComponent* Target = Hit.GetComponent();
-	if (APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Hit.GetActor()))
-	{
-		if (Spawned->IsMystery())
-		{
-			Spawned->RevealMystery();
-			return;
-		}
-		Target = Spawned->GetBody(); // Grab the welded root, not a sub-part.
-	}
-
-	if (!Target || !Target->IsSimulatingPhysics())
-	{
-		return;
-	}
-
-	const float Mass = Target->GetMass();
-	if (Mass > MaxSoloLiftKg)
-	{
-		Toast(FString::Printf(TEXT("Too heavy to lift alone (%s). Push it, or get a friend."), *FPMPromptParser::FormatWeight(Mass)));
-		return;
-	}
-	if (GripStamina < 0.15f)
-	{
-		Toast(TEXT("Your arm is too tired. Give it a second."));
-		return;
-	}
-
-	HeldMassKg = Mass;
-	HoldDistance = FMath::Clamp(Hit.Distance, 100.f, GrabReach);
-	Handle->GrabComponentAtLocation(Target, NAME_None, Hit.ImpactPoint);
-}
-
-void UPMSpellcasterComponent::OnGrabReleased()
-{
-	Release(false);
-}
-
-void UPMSpellcasterComponent::Release(bool bSlipped)
-{
-	if (!IsGrabbing())
-	{
-		return;
-	}
-	Handle->ReleaseComponent();
-	HeldMassKg = 0.f;
-	if (bSlipped)
-	{
-		Toast(TEXT("*fwip* - your grip gave out."));
-	}
-}
-
-void UPMSpellcasterComponent::OnReachIn()
-{
-	HoldDistance = FMath::Clamp(HoldDistance - 25.f, 100.f, GrabReach);
-}
-
-void UPMSpellcasterComponent::OnReachOut()
-{
-	HoldDistance = FMath::Clamp(HoldDistance + 25.f, 100.f, GrabReach);
 }
