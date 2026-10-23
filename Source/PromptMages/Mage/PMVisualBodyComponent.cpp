@@ -4,6 +4,8 @@
 #include "PromptMages.h"
 #include "Components/PoseableMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
 #include "GameFramework/Character.h"
 #include "HAL/IConsoleManager.h"
@@ -13,6 +15,9 @@ namespace PMVisual
 {
 	TAutoConsoleVariable<int32> CVarShowPhysicsBody(TEXT("pm.ShowPhysicsBody"), 0,
 		TEXT("1 = also show the hidden physics mannequin that drives the visual body (debug)."));
+
+	TAutoConsoleVariable<float> CVarMaxHeadBend(TEXT("pm.MaxHeadBend"), 25.f,
+		TEXT("Most the visible neck and head may each bend away from their rest pose, in degrees (0 = no limit)."));
 
 	/** Component-space reference pose of every bone. */
 	void ComponentRefPose(const FReferenceSkeleton& Ref, TArray<FTransform>& Out)
@@ -34,6 +39,28 @@ UPMVisualBodyComponent::UPMVisualBodyComponent()
 	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
 
 	BodyMesh = TSoftObjectPtr<USkeletalMesh>(FSoftObjectPath(TEXT("/Game/Characters/MannequinDemake/ue_mannequin_demake.ue_mannequin_demake")));
+
+	// The mage outfit (built by SourceArt/MannequinDemake/make_mage_costume.py).
+	auto Wear = [this](const TCHAR* Asset, const TCHAR* Bone, bool bHead)
+	{
+		FPMCostumePart& Part = Costume.AddDefaulted_GetRef();
+		Part.Mesh = TSoftObjectPtr<UStaticMesh>(FSoftObjectPath(FString::Printf(TEXT("/Game/PromptMages/Mage/%s.%s"), Asset, Asset)));
+		Part.Bone = Bone;
+		Part.bHideInFirstPerson = bHead;
+	};
+	Wear(TEXT("SM_Mage_Hat"), TEXT("DEF-head"), true);
+	Wear(TEXT("SM_Mage_HatBand"), TEXT("DEF-head"), true);
+	Wear(TEXT("SM_Mage_Beard"), TEXT("DEF-head"), true);
+	Wear(TEXT("SM_Mage_RobeChest"), TEXT("DEF-spine_003"), false);
+	Wear(TEXT("SM_Mage_RobeBelly"), TEXT("DEF-spine_001"), false);
+	Wear(TEXT("SM_Mage_RobeSkirt"), TEXT("DEF-spine"), false);
+	Wear(TEXT("SM_Mage_Belt"), TEXT("DEF-spine"), false);
+	Wear(TEXT("SM_Mage_SleeveL"), TEXT("DEF-upper_arm_L"), false);
+	Wear(TEXT("SM_Mage_SleeveR"), TEXT("DEF-upper_arm_R"), false);
+	Wear(TEXT("SM_Mage_ForeSleeveL"), TEXT("DEF-forearm_L"), false);
+	Wear(TEXT("SM_Mage_ForeSleeveR"), TEXT("DEF-forearm_R"), false);
+	Wear(TEXT("SM_Mage_CuffL"), TEXT("DEF-forearm_L"), false);
+	Wear(TEXT("SM_Mage_CuffR"), TEXT("DEF-forearm_R"), false);
 
 	// Low-poly "mannequin demake" (Blender DEF- bones) -> UE5 mannequin.
 	auto Map = [this](const TCHAR* Dst, const TCHAR* Src) { BoneMap.Add(Dst, Src); };
@@ -103,7 +130,57 @@ void UPMVisualBodyComponent::BeginPlay()
 	}
 
 	BuildLinks();
+	AttachCostume();
 	CopyPose();
+}
+
+int32 UPMVisualBodyComponent::FindVisualBone(const FName& Name) const
+{
+	const FReferenceSkeleton& DstRef = Visual->GetSkinnedAsset()->GetRefSkeleton();
+	const FString Wanted = Name.ToString().Replace(TEXT("."), TEXT("_")).ToLower();
+	for (int32 i = 0; i < DstRef.GetNum(); ++i)
+	{
+		if (DstRef.GetBoneName(i).ToString().Replace(TEXT("."), TEXT("_")).ToLower() == Wanted)
+		{
+			return i;
+		}
+	}
+	return INDEX_NONE;
+}
+
+void UPMVisualBodyComponent::AttachCostume()
+{
+	const FReferenceSkeleton& DstRef = Visual->GetSkinnedAsset()->GetRefSkeleton();
+	const APawn* Pawn = Cast<APawn>(GetOwner());
+	const bool bLocal = Pawn && Pawn->IsLocallyControlled();
+
+	for (const FPMCostumePart& Part : Costume)
+	{
+		UStaticMesh* Mesh = Part.Mesh.LoadSynchronous();
+		const int32 Bone = FindVisualBone(Part.Bone);
+		if (!Mesh || Bone == INDEX_NONE)
+		{
+			UE_LOG(LogPromptMages, Warning, TEXT("Costume: skipping %s on bone %s."), *Part.Mesh.ToString(), *Part.Bone.ToString());
+			continue;
+		}
+
+		UStaticMeshComponent* Piece = NewObject<UStaticMeshComponent>(GetOwner());
+		Piece->SetStaticMesh(Mesh);
+		Piece->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Piece->SetCastShadow(true);
+		Piece->SetupAttachment(Visual, DstRef.GetBoneName(Bone));
+		// Pieces are modelled in rest-pose space: undo the bone's rest transform so they sit where they were modelled.
+		Piece->SetRelativeTransform(DstRefComponent[Bone].Inverse());
+		if (Part.bHideInFirstPerson)
+		{
+			Piece->bCastHiddenShadow = true;
+			Piece->SetOwnerNoSee(bLocal);
+			HeadCostume.Add(Piece);
+		}
+		Piece->RegisterComponent();
+		CostumeComponents.Add(Piece);
+	}
+	bHeadHidden = bLocal;
 }
 
 void UPMVisualBodyComponent::BuildLinks()
@@ -230,6 +307,14 @@ void UPMVisualBodyComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 				Visual->UnHideBoneByName(HeadBone);
 			}
 		}
+		if (bHideHead != bHeadHidden)
+		{
+			bHeadHidden = bHideHead;
+			for (UStaticMeshComponent* Piece : HeadCostume)
+			{
+				Piece->SetOwnerNoSee(bHideHead);
+			}
+		}
 	}
 	CopyPose();
 }
@@ -250,6 +335,10 @@ void UPMVisualBodyComponent::CopyPose()
 	// Rotation that takes the mannequin's component space to the visual model's component space.
 	const FQuat SrcToDst = Visual->GetComponentQuat().Inverse() * Source->GetComponentQuat();
 
+	const int32 HeadIdx = DstRef.FindBoneIndex(HeadBone);
+	const int32 NeckIdx = HeadIdx != INDEX_NONE ? DstRef.GetParentIndex(HeadIdx) : INDEX_NONE;
+	const float MaxBend = FMath::DegreesToRadians(PMVisual::CVarMaxHeadBend.GetValueOnGameThread());
+
 	for (const FBoneLink& Link : Links)
 	{
 		const int32 i = Link.Dst;
@@ -264,7 +353,21 @@ void UPMVisualBodyComponent::CopyPose()
 
 		// How far the mannequin's bone has turned from its reference pose, applied to our bone's reference pose.
 		const FQuat Delta = SrcToDst * (SrcPose[Link.Src].GetRotation() * Link.SrcRefRotation.Inverse()) * SrcToDst.Inverse();
-		const FQuat Rotation = (Delta * Link.DstRefRotation).GetNormalized();
+		FQuat Rotation = (Delta * Link.DstRefRotation).GetNormalized();
+
+		// The physical head can flop far forward (it's a heavy ball on a springy neck). Show at most
+		// pm.MaxHeadBend degrees per joint so the mage doesn't stare at its own chest.
+		if ((i == HeadIdx || i == NeckIdx) && Parent != INDEX_NONE && MaxBend > 0.f)
+		{
+			const FQuat ParentNow = ParentComponent.GetRotation();
+			const FQuat LocalRest = Links[Parent].DstRefRotation.Inverse() * Link.DstRefRotation;
+			const FQuat Bend = (ParentNow.Inverse() * Rotation) * LocalRest.Inverse();
+			const float Angle = Bend.GetAngle();
+			if (Angle > MaxBend)
+			{
+				Rotation = (ParentNow * FQuat::Slerp(FQuat::Identity, Bend, MaxBend / Angle) * LocalRest).GetNormalized();
+			}
+		}
 
 		FVector Location;
 		if (i == DstHip && SrcPose.IsValidIndex(SrcPelvis))

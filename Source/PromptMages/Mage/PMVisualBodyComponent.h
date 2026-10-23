@@ -9,6 +9,27 @@
 class UPoseableMeshComponent;
 class USkeletalMesh;
 class USkeletalMeshComponent;
+class UStaticMesh;
+class UStaticMeshComponent;
+
+/** One rigid costume piece (hat, beard, robe...) that follows a bone of the visual body. */
+USTRUCT(BlueprintType)
+struct FPMCostumePart
+{
+	GENERATED_BODY()
+
+	/** Modelled in the body's rest-pose space (cm, feet at Z=0, facing +Y), so it lands where it was modelled. */
+	UPROPERTY(EditAnywhere, Category = "Costume")
+	TSoftObjectPtr<UStaticMesh> Mesh;
+
+	/** Visual-body bone the piece follows. */
+	UPROPERTY(EditAnywhere, Category = "Costume")
+	FName Bone;
+
+	/** Hide for the owning player in first person (things on the head), but still cast a shadow. */
+	UPROPERTY(EditAnywhere, Category = "Costume")
+	bool bHideInFirstPerson = false;
+};
 
 /**
  * The character's real body (CharacterMesh0, UE5 mannequin skeleton) keeps doing everything: animation,
@@ -48,6 +69,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Body")
 	FRotator ModelRotation = FRotator::ZeroRotator;
 
+	/** Costume pieces attached to the body (the mage outfit). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Costume")
+	TArray<FPMCostumePart> Costume;
+
 	UPoseableMeshComponent* GetVisual() const { return Visual; }
 
 protected:
@@ -64,6 +89,17 @@ private:
 
 	void BuildLinks();
 	void CopyPose();
+	void AttachCostume();
+	int32 FindVisualBone(const FName& Name) const;
+
+	UPROPERTY()
+	TArray<TObjectPtr<UStaticMeshComponent>> CostumeComponents;
+
+	/** The costume pieces that hide in first person (hat, beard). */
+	UPROPERTY()
+	TArray<TObjectPtr<UStaticMeshComponent>> HeadCostume;
+
+	bool bHeadHidden = false;
 
 	UPROPERTY()
 	TObjectPtr<USkeletalMeshComponent> Source;

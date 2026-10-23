@@ -23,9 +23,15 @@ namespace PMRagdoll
 {
 	TAutoConsoleVariable<float> CVarThirdPerson(TEXT("pm.ThirdPerson"), 0.f,
 		TEXT("Camera distance behind the local player (0 = first person). Shows your own head."));
+	TAutoConsoleVariable<float> CVarThirdPersonYaw(TEXT("pm.ThirdPersonYaw"), 0.f,
+		TEXT("Orbit the third-person camera around the mage, in degrees (180 = front view)."));
+
+	TAutoConsoleVariable<float> CVarNeckDrive(TEXT("pm.NeckDrive"), 5.f,
+		TEXT("Neck and head motor strength, as a multiple of the spine's. Higher = the head stays up instead of drooping."));
 
 	const FName Pelvis(TEXT("pelvis"));
 	const FName Spine(TEXT("spine_02"));
+	const FName Neck(TEXT("neck_01"));
 	const FName Head(TEXT("head"));
 	const FName ThighL(TEXT("thigh_l"));
 	const FName ThighR(TEXT("thigh_r"));
@@ -131,6 +137,8 @@ void UPMActiveRagdollComponent::SetupBody()
 	// Everything below the pelvis is simulated; the pelvis stays glued to the capsule.
 	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Pelvis, LegDrive, false);
 	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Spine, SpineDrive, true);
+	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Neck,
+		PMRagdoll::Scaled(SpineDrive, PMRagdoll::CVarNeckDrive.GetValueOnGameThread()), true);
 	Mesh->SetAllBodiesBelowSimulatePhysics(PMRagdoll::Pelvis, true, false);
 	if (!bSimulateLegs)
 	{
@@ -501,6 +509,11 @@ void UPMActiveRagdollComponent::ApplySpineAndLegDrives()
 	// Weaker spine motors let the reaching hands pull the torso down into a bend.
 	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Spine,
 		PMRagdoll::Scaled(SpineDrive, FMath::Lerp(1.f, StoopSpineScale, AppliedStoop)), true);
+
+	// The head is heavy on a thin neck: with the spine's motors it droops ~50 degrees, chin on chest.
+	// A stiffer neck keeps it up (still softened while bending over so you can look down at your hands).
+	const float NeckScale = PMRagdoll::CVarNeckDrive.GetValueOnGameThread() * FMath::Lerp(1.f, 0.5f, AppliedStoop);
+	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Neck, PMRagdoll::Scaled(SpineDrive, NeckScale), true);
 
 	const FPhysicalAnimationData Legs = bLegsRelaxed ? PMRagdoll::Scaled(LegDrive, CrouchLegScale) : LegDrive;
 	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::ThighL, Legs, true);
@@ -892,7 +905,20 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 	const float ThirdPerson = PMRagdoll::CVarThirdPerson.GetValueOnGameThread();
 	if (ThirdPerson > 0.f)
 	{
-		CameraLocation = Eye - Character->GetControlRotation().Vector() * ThirdPerson + FVector(0.f, 0.f, 20.f);
+		// pm.ThirdPersonYaw orbits the camera around the mage (180 = look at your own face).
+		const float Orbit = PMRagdoll::CVarThirdPersonYaw.GetValueOnGameThread();
+		FRotator ViewRot = Character->GetControlRotation();
+		ViewRot.Yaw += Orbit;
+		CameraLocation = Eye - ViewRot.Vector() * ThirdPerson + FVector(0.f, 0.f, 20.f);
+		Camera->bUsePawnControlRotation = FMath::IsNearlyZero(Orbit);
+		if (!Camera->bUsePawnControlRotation)
+		{
+			Camera->SetWorldRotation((Eye - CameraLocation).Rotation());
+		}
+	}
+	else
+	{
+		Camera->bUsePawnControlRotation = true;
 	}
 	Camera->SetWorldLocation(CameraLocation);
 }
