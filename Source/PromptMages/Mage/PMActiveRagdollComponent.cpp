@@ -5,6 +5,7 @@
 #include "PMSpellcasterComponent.h"
 #include "PMWandComponent.h"
 #include "PMSpellSubsystem.h"
+#include "PMVisualBodyComponent.h"
 #include "PromptMages.h"
 #include "PromptMagesCharacter.h"
 #include "Camera/CameraComponent.h"
@@ -803,6 +804,14 @@ void UPMActiveRagdollComponent::UpdateArms()
 	const bool bFirstPerson = IsLocalFirstPerson();
 	const bool bWand = IsWandOut();
 	const UPrimitiveComponent* Target = Held.Get();
+	UPMVisualBodyComponent* VisualBody = GetOwner()->FindComponentByClass<UPMVisualBodyComponent>();
+	auto SetFist = [VisualBody](int32 Hand, bool bClosed)
+	{
+		if (VisualBody)
+		{
+			VisualBody->SetFist(Hand, bClosed);
+		}
+	};
 
 	for (int32 i = 0; i < 2; ++i)
 	{
@@ -816,6 +825,7 @@ void UPMActiveRagdollComponent::UpdateArms()
 			const FVector Guard = Eye + Forward * 35.f + Right * Arm.Side * 18.f - Up * 16.f;
 			const FVector Strike = Eye + Forward * PunchReach + Right * Arm.Side * 4.f - Up * 6.f;
 			PlaceHand(Arm, true, FMath::Lerp(Guard, Strike, Out));
+			SetFist(i, true);
 			continue;
 		}
 
@@ -823,6 +833,7 @@ void UPMActiveRagdollComponent::UpdateArms()
 		if (bWand && Arm.Side > 0.f)
 		{
 			PlaceHand(Arm, true, Eye + Forward * 55.f + Right * 16.f - Up * 12.f);
+			SetFist(i, true); // Gripping the wand.
 			continue;
 		}
 		// Holding something: hands on it (either side of a carried thing, together on a dragged one).
@@ -832,6 +843,7 @@ void UPMActiveRagdollComponent::UpdateArms()
 				? Target->GetComponentTransform().TransformPosition(DragLocalPoint) + Right * Arm.Side * 12.f
 				: Target->Bounds.Origin + Right * Arm.Side * (HeldRadius + 6.f);
 			PlaceHand(Arm, true, Grip);
+			SetFist(i, false);
 			continue;
 		}
 		// First person: hands up in view, ready. Third person (and how others see you): arms hang.
@@ -839,9 +851,11 @@ void UPMActiveRagdollComponent::UpdateArms()
 		{
 			const FVector& O = FirstPersonHandOffset;
 			PlaceHand(Arm, true, Eye + Forward * O.X + Right * Arm.Side * O.Y + Up * O.Z);
+			SetFist(i, true); // Fists up, ready.
 			continue;
 		}
 		PlaceHand(Arm, false, FVector::ZeroVector);
+		SetFist(i, false);
 	}
 }
 

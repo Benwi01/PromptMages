@@ -124,6 +124,7 @@ void UPMVisualBodyComponent::BeginPlay()
 	}
 
 	BuildLinks();
+	BuildFingerCurls();
 	AttachCostume();
 	CopyPose();
 }
@@ -268,6 +269,73 @@ void UPMVisualBodyComponent::BuildLinks()
 	UE_LOG(LogPromptMages, Log, TEXT("Visual body: %d of %d bones follow the mannequin."), Mapped, DstRef.GetNum());
 }
 
+void UPMVisualBodyComponent::BuildFingerCurls()
+{
+	const FReferenceSkeleton& DstRef = Visual->GetSkinnedAsset()->GetRefSkeleton();
+	Curls.Reset();
+	CurlOfBone.Init(INDEX_NONE, DstRef.GetNum());
+
+	for (int32 Hand = 0; Hand < 2; ++Hand)
+	{
+		const TCHAR* Side = Hand == 0 ? TEXT("L") : TEXT("R");
+		auto Bone = [&](const TCHAR* Base) { return FindVisualBone(FName(FString::Printf(TEXT("%s.%s"), Base, Side))); };
+		auto Pos = [&](int32 Index) { return DstRefComponent[Index].GetLocation(); };
+
+		HandBones[Hand] = Bone(TEXT("DEF-hand"));
+		const int32 Index1 = Bone(TEXT("DEF-f_index.01"));
+		const int32 Pinky1 = Bone(TEXT("DEF-f_pinky.01"));
+		const int32 Middle1 = Bone(TEXT("DEF-f_middle.01"));
+		const int32 Middle2 = Bone(TEXT("DEF-f_middle.02"));
+		const int32 Thumb1 = Bone(TEXT("DEF-thumb.01"));
+		const int32 Thumb2 = Bone(TEXT("DEF-thumb.02"));
+		if (HandBones[Hand] == INDEX_NONE || Index1 == INDEX_NONE || Pinky1 == INDEX_NONE || Middle1 == INDEX_NONE
+			|| Middle2 == INDEX_NONE || Thumb1 == INDEX_NONE || Thumb2 == INDEX_NONE)
+		{
+			UE_LOG(LogPromptMages, Warning, TEXT("Visual body: can't find the %s hand's finger bones, no fists."), Side);
+			continue;
+		}
+
+		// The hand's shape in the rest pose: across the knuckles, along the fingers, and out of the palm
+		// (the side the thumb sits on), so we don't depend on how the bones' axes happen to point.
+		const FVector Across = (Pos(Index1) - Pos(Pinky1)).GetSafeNormal();
+		const FVector Along = (Pos(Middle2) - Pos(Middle1)).GetSafeNormal();
+		FVector Palm = FVector::CrossProduct(Across, Along).GetSafeNormal();
+		const FVector KnuckleMid = (Pos(Index1) + Pos(Pinky1)) * 0.5f;
+		if (FVector::DotProduct(Pos(Thumb1) - KnuckleMid, Palm) < 0.f)
+		{
+			Palm = -Palm;
+		}
+		const FQuat HandRest = DstRefComponent[HandBones[Hand]].GetRotation();
+		// Turning about Along x Palm swings the fingers toward the palm.
+		const FVector FingerAxis = HandRest.UnrotateVector(FVector::CrossProduct(Along, Palm).GetSafeNormal());
+		const FVector ThumbDir = (Pos(Thumb2) - Pos(Thumb1)).GetSafeNormal();
+		const FVector ThumbAxis = HandRest.UnrotateVector(FVector::CrossProduct(ThumbDir, Palm).GetSafeNormal());
+
+		// Degrees each joint bends, counted from the knuckle (each joint adds to the ones before it).
+		const float FingerBend[3] = { 80.f, 95.f, 60.f };
+		const float ThumbBend[3] = { 15.f, 30.f, 35.f };
+		for (const TCHAR* Finger : { TEXT("index"), TEXT("middle"), TEXT("ring"), TEXT("pinky"), TEXT("thumb") })
+		{
+			const bool bThumb = FCString::Strcmp(Finger, TEXT("thumb")) == 0;
+			float Total = 0.f;
+			for (int32 Joint = 1; Joint <= 3; ++Joint)
+			{
+				const int32 Index = Bone(*FString::Printf(TEXT("DEF-%s%s.%02d"), bThumb ? TEXT("") : TEXT("f_"), Finger, Joint));
+				if (Index == INDEX_NONE)
+				{
+					break;
+				}
+				Total += (bThumb ? ThumbBend : FingerBend)[Joint - 1];
+				FFingerCurl& Curl = Curls.AddDefaulted_GetRef();
+				Curl.Hand = Hand;
+				Curl.AxisInHand = bThumb ? ThumbAxis : FingerAxis;
+				Curl.Angle = FMath::DegreesToRadians(Total);
+				CurlOfBone[Index] = Curls.Num() - 1;
+			}
+		}
+	}
+}
+
 void UPMVisualBodyComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
@@ -333,6 +401,30 @@ void UPMVisualBodyComponent::CopyPose()
 	const int32 NeckIdx = HeadIdx != INDEX_NONE ? DstRef.GetParentIndex(HeadIdx) : INDEX_NONE;
 	const float MaxBend = FMath::DegreesToRadians(PMVisual::CVarMaxHeadBend.GetValueOnGameThread());
 
+	// Fists: ease each hand toward open/closed.
+	const float DeltaTime = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.016f;
+	for (int32 Hand = 0; Hand < 2; ++Hand)
+	{
+		Fist[Hand] = FMath::FInterpConstantTo(Fist[Hand], FistTarget[Hand], DeltaTime, 9.f);
+	}
+	// Bend a finger joint toward the palm, about the hand's current knuckle axis (parents are posed first).
+	auto CurlFinger = [&](int32 i)
+	{
+		const int32 CurlIndex = CurlOfBone.IsValidIndex(i) ? CurlOfBone[i] : INDEX_NONE;
+		if (CurlIndex == INDEX_NONE)
+		{
+			return;
+		}
+		const FFingerCurl& Curl = Curls[CurlIndex];
+		const float Amount = Fist[Curl.Hand];
+		if (Amount <= 0.f || !TargetComponent.IsValidIndex(HandBones[Curl.Hand]))
+		{
+			return;
+		}
+		const FVector Axis = TargetComponent[HandBones[Curl.Hand]].GetRotation().RotateVector(Curl.AxisInHand);
+		TargetComponent[i].SetRotation((FQuat(Axis, Curl.Angle * Amount) * TargetComponent[i].GetRotation()).GetNormalized());
+	};
+
 	for (const FBoneLink& Link : Links)
 	{
 		const int32 i = Link.Dst;
@@ -342,6 +434,7 @@ void UPMVisualBodyComponent::CopyPose()
 		if (Link.Src == INDEX_NONE || !SrcPose.IsValidIndex(Link.Src))
 		{
 			TargetComponent[i] = DstRefLocal[i] * ParentComponent;
+			CurlFinger(i);
 			continue;
 		}
 
@@ -374,6 +467,7 @@ void UPMVisualBodyComponent::CopyPose()
 			Location = ParentComponent.TransformPosition(DstRefLocal[i].GetLocation());
 		}
 		TargetComponent[i] = FTransform(Rotation, Location, DstRefComponent[i].GetScale3D());
+		CurlFinger(i);
 	}
 
 	// Back to parent-relative transforms for the poseable mesh.

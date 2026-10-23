@@ -75,6 +75,9 @@ public:
 
 	UPoseableMeshComponent* GetVisual() const { return Visual; }
 
+	/** Close (or open) a hand into a fist: 0 = left, 1 = right. Eases over about a tenth of a second. */
+	void SetFist(int32 Hand, bool bClosed) { if (Hand == 0 || Hand == 1) { FistTarget[Hand] = bClosed ? 1.f : 0.f; } }
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -87,7 +90,17 @@ private:
 		FQuat DstRefRotation = FQuat::Identity; // Component space.
 	};
 
+	/** One finger joint that bends when the hand makes a fist. */
+	struct FFingerCurl
+	{
+		int32 Hand = 0;
+		/** Bend axis in the hand's own space, and how far (radians, counted from the knuckle) at a full fist. */
+		FVector AxisInHand = FVector::ZeroVector;
+		float Angle = 0.f;
+	};
+
 	void BuildLinks();
+	void BuildFingerCurls();
 	void CopyPose();
 	void AttachCostume();
 	int32 FindVisualBone(const FName& Name) const;
@@ -112,6 +125,13 @@ private:
 	TArray<FTransform> DstRefLocal;
 	TArray<FTransform> DstRefComponent;
 	TArray<FTransform> TargetComponent;
+	TArray<FFingerCurl> Curls;
+	/** Per visual bone: index into Curls, or INDEX_NONE. */
+	TArray<int32> CurlOfBone;
+	int32 HandBones[2] = { INDEX_NONE, INDEX_NONE };
+	float Fist[2] = { 0.f, 0.f };
+	float FistTarget[2] = { 0.f, 0.f };
+
 	int32 SrcPelvis = INDEX_NONE;
 	int32 DstHip = INDEX_NONE;
 	FVector SrcPelvisRefLocation = FVector::ZeroVector;
