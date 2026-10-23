@@ -152,6 +152,13 @@ void UPMActiveRagdollComponent::SetupBody()
 	Movement->BrakingDecelerationWalking = BrakingDeceleration;
 	Movement->GroundFriction = 3.f;
 
+	// Crouch (Ctrl): the capsule shrinks and we drop the hips ourselves (see UpdateStoopAndCrouch).
+	Movement->GetNavAgentPropertiesRef().bCanCrouch = true;
+	Movement->MaxWalkSpeedCrouched = CrouchSpeed;
+	DefaultMeshZ = Mesh->GetRelativeLocation().Z;
+	StandingHalfHeight = Character->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+	StandingEyeHeight = Character->BaseEyeHeight;
+
 	bBodyReady = true;
 }
 
@@ -206,6 +213,8 @@ void UPMActiveRagdollComponent::TryBindInput()
 	ArmInput->BindKey(EKeys::MouseScrollDown, IE_Pressed, this, &UPMActiveRagdollComponent::OnReachIn);
 	ArmInput->BindKey(EKeys::LeftShift, IE_Pressed, this, &UPMActiveRagdollComponent::OnSprintPressed);
 	ArmInput->BindKey(EKeys::LeftShift, IE_Released, this, &UPMActiveRagdollComponent::OnSprintReleased);
+	ArmInput->BindKey(EKeys::LeftControl, IE_Pressed, this, &UPMActiveRagdollComponent::OnCrouchPressed);
+	ArmInput->BindKey(EKeys::LeftControl, IE_Released, this, &UPMActiveRagdollComponent::OnCrouchReleased);
 	PC->PushInputComponent(ArmInput);
 
 	SetupLocalView();
@@ -273,6 +282,22 @@ void UPMActiveRagdollComponent::OnSprintReleased()
 	}
 }
 
+void UPMActiveRagdollComponent::OnCrouchPressed()
+{
+	if (ACharacter* Character = Cast<ACharacter>(GetOwner()))
+	{
+		Character->Crouch();
+	}
+}
+
+void UPMActiveRagdollComponent::OnCrouchReleased()
+{
+	if (ACharacter* Character = Cast<ACharacter>(GetOwner()))
+	{
+		Character->UnCrouch();
+	}
+}
+
 // --- Tick ----------------------------------------------------------------------------------------
 
 void UPMActiveRagdollComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
@@ -322,6 +347,7 @@ void UPMActiveRagdollComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 	}
 
 	UpdateMotors(DeltaTime);
+	UpdateStoopAndCrouch(DeltaTime);
 	for (FPMArmState& Arm : Arms)
 	{
 		UpdateArm(Arm, DeltaTime, ViewLocation, ViewRotation);
@@ -365,11 +391,98 @@ void UPMActiveRagdollComponent::ApplyArmDrive(const FPMArmState& Arm)
 FVector UPMActiveRagdollComponent::GetShoulderLocation(const FPMArmState& Arm) const
 {
 	// Taken from the capsule rather than the floppy bone, so reach and leash feel stable.
+	// Measured from the floor so crouching (smaller capsule + dropped hips) lowers it correctly.
 	const ACharacter* Character = CastChecked<ACharacter>(GetOwner());
-	const float HalfHeight = Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-	return Character->GetActorLocation()
-		+ FVector(0.f, 0.f, HalfHeight * 0.5f)
-		+ Character->GetActorRightVector() * Arm.Side * 18.f;
+	const float FloorZ = Character->GetActorLocation().Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	FVector Shoulder = Character->GetActorLocation() + Character->GetActorRightVector() * Arm.Side * 18.f;
+	Shoulder.Z = FloorZ + StandingHalfHeight * 1.5f - HipDrop;
+	return Shoulder;
+}
+
+FVector UPMActiveRagdollComponent::GetReachTarget(const FPMArmState& Arm, const FVector& ViewLocation, const FRotator& ViewRotation) const
+{
+	const FVector Dir = ViewRotation.Vector();
+	const FVector Right = FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Y);
+	const float MaxReach = ArmLength + StoopReach * Stoop;
+
+	// Aim at whatever the crosshair is on, if it's within reach (things on the floor, a ledge, a crate).
+	// Otherwise hold the hand at the wheel-controlled distance, which is what you swing and throw with.
+	FVector Target = ViewLocation + Dir * ReachDistance;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMReachAim), false, GetOwner());
+	for (const FPMArmState& Other : Arms)
+	{
+		if (const UPrimitiveComponent* Held = Other.GripTarget.Get())
+		{
+			Params.AddIgnoredActor(Held->GetOwner()); // Don't aim at what we're already carrying.
+		}
+	}
+	FHitResult Hit;
+	const float TraceLength = ReachDistance + StoopReach + ArmLength;
+	if (GetWorld()->LineTraceSingleByChannel(Hit, ViewLocation, ViewLocation + Dir * TraceLength, ECC_Visibility, Params))
+	{
+		if (Hit.Distance < ReachDistance || Stoop > 0.2f)
+		{
+			Target = Hit.ImpactPoint - Dir * 4.f;
+		}
+	}
+	Target += Right * Arm.Side * 12.f;
+
+	const FVector Shoulder = GetShoulderLocation(Arm);
+	const FVector ToTarget = Target - Shoulder;
+	if (ToTarget.SizeSquared() > FMath::Square(MaxReach))
+	{
+		Target = Shoulder + ToTarget.GetSafeNormal() * MaxReach;
+	}
+	return Target;
+}
+
+void UPMActiveRagdollComponent::UpdateStoopAndCrouch(float DeltaTime)
+{
+	ACharacter* Character = CastChecked<ACharacter>(GetOwner());
+
+	// Bend over when reaching while looking down, so hands can get to things on the floor.
+	const bool bReachingByHand = !bArmsLocked && (Arms[0].bButtonDown || Arms[1].bButtonDown);
+	const float LookDown = -FRotator::NormalizeAxis(Character->GetControlRotation().Pitch);
+	float Target = bReachingByHand
+		? FMath::Clamp((LookDown - StoopStartPitch) / FMath::Max(StoopFullPitch - StoopStartPitch, 1.f), 0.f, 1.f)
+		: 0.f;
+	if (bClimbing || Movement->IsFalling())
+	{
+		Target = 0.f;
+	}
+	Stoop = FMath::FInterpTo(Stoop, Target, DeltaTime, 4.f);
+
+	// Crouch: the capsule shrinks (CharacterMovement) and we drop the hips; the relaxed legs fold under them.
+	const bool bCrouched = Character->bIsCrouched;
+	HipDrop = FMath::FInterpTo(HipDrop, bCrouched ? CrouchHipDrop : 0.f, DeltaTime, 6.f);
+	const float CapsuleShift = StandingHalfHeight - Character->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+	FVector MeshLocation = Mesh->GetRelativeLocation();
+	MeshLocation.Z = DefaultMeshZ + CapsuleShift - HipDrop;
+	Mesh->SetRelativeLocation(MeshLocation);
+
+	if (FMath::Abs(Stoop - AppliedStoop) > 0.05f || bCrouched != bLegsRelaxed)
+	{
+		bLegsRelaxed = bCrouched;
+		AppliedStoop = Stoop;
+		ApplySpineAndLegDrives();
+	}
+}
+
+void UPMActiveRagdollComponent::ApplySpineAndLegDrives()
+{
+	// Weaker spine motors let the reaching hands pull the torso down into a bend.
+	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::Spine,
+		PMRagdoll::Scaled(SpineDrive, FMath::Lerp(1.f, StoopSpineScale, AppliedStoop)), true);
+
+	const FPhysicalAnimationData Legs = bLegsRelaxed ? PMRagdoll::Scaled(LegDrive, CrouchLegScale) : LegDrive;
+	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::ThighL, Legs, true);
+	PhysicalAnimation->ApplyPhysicalAnimationSettingsBelow(PMRagdoll::ThighR, Legs, true);
+
+	// The spine call also covered the arms; put their own drives back.
+	for (const FPMArmState& Arm : Arms)
+	{
+		ApplyArmDrive(Arm);
+	}
 }
 
 FVector UPMActiveRagdollComponent::GetGripAnchor(const FPMArmState& Arm) const
@@ -405,16 +518,7 @@ void UPMActiveRagdollComponent::UpdateArm(FPMArmState& Arm, float DeltaTime, con
 				StartReach(Arm);
 			}
 
-			// Each hand reaches toward the crosshair, offset to its own side, limited by arm length.
-			const FVector Right = FRotationMatrix(ViewRotation).GetUnitAxis(EAxis::Y);
-			FVector Target = ViewLocation + ViewRotation.Vector() * ReachDistance + Right * Arm.Side * 12.f;
-			const FVector Shoulder = GetShoulderLocation(Arm);
-			const FVector ToTarget = Target - Shoulder;
-			if (ToTarget.SizeSquared() > FMath::Square(ArmLength))
-			{
-				Target = Shoulder + ToTarget.GetSafeNormal() * ArmLength;
-			}
-			Arm.Reach->SetTargetLocation(Target);
+			Arm.Reach->SetTargetLocation(GetReachTarget(Arm, ViewLocation, ViewRotation));
 
 			if (!Arm.IsGripping() && Now >= Arm.RegripBlockedUntil && Arm.Stamina > 0.15f)
 			{
@@ -726,9 +830,14 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 	}
 	SmoothedHead = FMath::VInterpTo(SmoothedHead, Head, DeltaTime, CameraSmoothSpeed);
 
-	const FVector Eye = Character->GetActorLocation() + FVector(0.f, 0.f, Character->BaseEyeHeight);
+	// Eye height measured from the floor, so crouching lowers the view by the hip drop.
+	const float FloorZ = Character->GetActorLocation().Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	FVector Eye = Character->GetActorLocation();
+	Eye.Z = FloorZ + StandingHalfHeight + StandingEyeHeight - HipDrop;
 	const FVector Forward = FRotator(0.f, Character->GetControlRotation().Yaw, 0.f).Vector();
-	Camera->SetWorldLocation(FMath::Lerp(Eye, SmoothedHead, CameraHeadFollow) + Forward * CameraForwardOffset);
+	// While bending over, ride the head further down so you look over your hands, not at your own back.
+	const float Follow = FMath::Lerp(CameraHeadFollow, 0.8f, Stoop);
+	Camera->SetWorldLocation(FMath::Lerp(Eye, SmoothedHead, Follow) + Forward * CameraForwardOffset);
 }
 
 // --- Console commands for testing ----------------------------------------------------------------

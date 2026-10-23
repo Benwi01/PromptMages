@@ -125,7 +125,7 @@ void UPMHudWidget::BuildTree()
 	Place(StatusText, FAnchors(0.f, 0.f), FVector2D(0.f, 0.f), FMargin(24.f, 20.f, 0.f, 0.f), true);
 
 	// Controls hint, bottom left.
-	HelpText = MakeText(TEXT("Tab  Spellbook     Hold LMB / RMB  Left / right hand     Both + look up  Climb     Wheel  Reach     Shift  Sprint"), 13, FLinearColor(1.f, 1.f, 1.f, 0.6f));
+	HelpText = MakeText(TEXT("Tab  Spellbook     Hold LMB / RMB  Left / right hand     Both + look up  Climb     Wheel  Reach     Shift  Sprint     Ctrl  Crouch"), 13, FLinearColor(1.f, 1.f, 1.f, 0.6f));
 	HelpText->SetAutoWrapText(false);
 	HelpText->SetShadowOffset(FVector2D(1.f, 1.f));
 	Place(HelpText, FAnchors(0.f, 1.f), FVector2D(0.f, 1.f), FMargin(24.f, -16.f, 0.f, 0.f), true);

@@ -91,6 +91,7 @@ public:
 	/** Testing hook: press or release a hand as if its mouse button changed (pm.Hand console command). */
 	void SetHandHeld(EPMArm Arm, bool bHeld) { GetArm(Arm).bButtonDown = bHeld; }
 	bool IsSprinting() const { return bSprinting; }
+	float GetStoop() const { return Stoop; }
 
 	// --- Body ---
 
@@ -175,6 +176,35 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Arms")
 	float ForceTransfer = 1.f;
 
+	// --- Reaching down ---
+
+	/** Reaching while looking further down than this (degrees) starts bending over. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
+	float StoopStartPitch = 20.f;
+
+	/** Looking this far down (degrees) while reaching is a full bend. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
+	float StoopFullPitch = 65.f;
+
+	/** Extra reach (cm) a full bend gives the hands. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
+	float StoopReach = 65.f;
+
+	/** Spine motor strength at a full bend, so the torso can fold forward. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
+	float StoopSpineScale = 0.1f;
+
+	/** How far (cm) the hips drop while crouching (Ctrl). The floppy legs fold under them. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
+	float CrouchHipDrop = 45.f;
+
+	/** Leg motor strength while crouching. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
+	float CrouchLegScale = 0.15f;
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Reach Down")
+	float CrouchSpeed = 220.f;
+
 	// --- Climbing ---
 
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Climb")
@@ -219,6 +249,12 @@ private:
 	void OnReachIn();
 	void OnSprintPressed();
 	void OnSprintReleased();
+	void OnCrouchPressed();
+	void OnCrouchReleased();
+
+	void UpdateStoopAndCrouch(float DeltaTime);
+	void ApplySpineAndLegDrives();
+	FVector GetReachTarget(const FPMArmState& Arm, const FVector& ViewLocation, const FRotator& ViewRotation) const;
 
 	void UpdateArm(FPMArmState& Arm, float DeltaTime, const FVector& ViewLocation, const FRotator& ViewRotation);
 	void StartReach(FPMArmState& Arm);
@@ -259,4 +295,14 @@ private:
 	float MotorScale = 1.f;
 	bool bCameraInitialised = false;
 	FVector SmoothedHead = FVector::ZeroVector;
+
+	/** 0..1 how far bent over we are. */
+	float Stoop = 0.f;
+	float AppliedStoop = 0.f;
+	/** Current hip drop (cm), eased toward CrouchHipDrop while crouched. */
+	float HipDrop = 0.f;
+	bool bLegsRelaxed = false;
+	float DefaultMeshZ = 0.f;
+	float StandingHalfHeight = 96.f;
+	float StandingEyeHeight = 64.f;
 };
