@@ -349,6 +349,9 @@ void UPMActiveRagdollComponent::TickComponent(float DeltaTime, ELevelTick TickTy
 		ViewLocation = GetOwner()->GetActorLocation();
 		ViewRotation = GetOwner()->GetActorRotation();
 	}
+	// Hands always aim from the mage's own eyes. The camera can be pulled back (pm.ThirdPerson); reaching
+	// "90 cm in front of the camera" would then put the hands behind the mage's back.
+	ViewLocation = GetEyeLocation();
 
 	if (GFrameCounter % 60 == 0)
 	{
@@ -412,6 +415,16 @@ FVector UPMActiveRagdollComponent::GetShoulderLocation(const FPMArmState& Arm) c
 	FVector Shoulder = Character->GetActorLocation() + Character->GetActorRightVector() * Arm.Side * 18.f;
 	Shoulder.Z = FloorZ + StandingHalfHeight * 1.5f - HipDrop;
 	return Shoulder;
+}
+
+FVector UPMActiveRagdollComponent::GetEyeLocation() const
+{
+	// Eye height measured from the floor, so crouching lowers it by the hip drop.
+	const ACharacter* Character = CastChecked<ACharacter>(GetOwner());
+	const float FloorZ = Character->GetActorLocation().Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	FVector Eye = Character->GetActorLocation();
+	Eye.Z = FloorZ + StandingHalfHeight + StandingEyeHeight - HipDrop;
+	return Eye;
 }
 
 FVector UPMActiveRagdollComponent::GetReachTarget(const FPMArmState& Arm, const FVector& ViewLocation, const FRotator& ViewRotation) const
@@ -869,10 +882,7 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 	}
 	SmoothedHead = FMath::VInterpTo(SmoothedHead, Head, DeltaTime, CameraSmoothSpeed);
 
-	// Eye height measured from the floor, so crouching lowers the view by the hip drop.
-	const float FloorZ = Character->GetActorLocation().Z - Character->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
-	FVector Eye = Character->GetActorLocation();
-	Eye.Z = FloorZ + StandingHalfHeight + StandingEyeHeight - HipDrop;
+	const FVector Eye = GetEyeLocation();
 	const FVector Forward = FRotator(0.f, Character->GetControlRotation().Yaw, 0.f).Vector();
 	// While bending over, ride the head further down so you look over your hands, not at your own back.
 	const float Follow = FMath::Lerp(CameraHeadFollow, 0.8f, Stoop);

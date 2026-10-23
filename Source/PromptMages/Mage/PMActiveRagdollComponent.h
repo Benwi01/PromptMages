@@ -257,6 +257,8 @@ private:
 	void UpdateStoopAndCrouch(float DeltaTime);
 	void ApplySpineAndLegDrives();
 	FVector GetReachTarget(const FPMArmState& Arm, const FVector& ViewLocation, const FRotator& ViewRotation) const;
+	/** Where the mage's eyes are (not the camera, which may be pulled back in third person). */
+	FVector GetEyeLocation() const;
 
 	void UpdateArm(FPMArmState& Arm, float DeltaTime, const FVector& ViewLocation, const FRotator& ViewRotation);
 	void StartReach(FPMArmState& Arm);
