@@ -13,6 +13,7 @@ class UInputComponent;
 class UPhysicsHandleComponent;
 class UPrimitiveComponent;
 class USkeletalMeshComponent;
+class USoundBase;
 
 /** Runtime state for one arm. */
 USTRUCT()
@@ -123,10 +124,6 @@ public:
 	/** Stagger: how hard the hardest hit knocks the upper body back (cm/s). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Stagger")
 	float StaggerBodyPush = 250.f;
-
-	/** Stagger: an object must come at you at least this fast (cm/s) to count. */
-	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Stagger")
-	float StaggerMinSpeed = 300.f;
 
 	/** Stagger: hits below this momentum (kg x cm/s) are ignored; at StaggerFullMomentum you get the full stagger. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Stagger")
@@ -242,6 +239,26 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
 	float GuardHoldSeconds = 3.f;
 
+	/** On a hit the fist holds at the impact point this long (s) before pulling back. 0 = off. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	float PunchStickSeconds = 0.06f;
+
+	/** On a hit the camera kicks up this many degrees and springs back. 0 = off. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	float PunchCameraKick = 2.f;
+
+	/** How fast the camera kick springs back (higher = quicker). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	float PunchCameraKickRecovery = 14.f;
+
+	/** Played at the impact point when a punch connects (empty = silent). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	TObjectPtr<USoundBase> PunchHitSound;
+
+	/** Played when you throw a punch (empty = silent). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
+	TObjectPtr<USoundBase> PunchSwingSound;
+
 	/** How hard a punch shoves another character (cm/s). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
 	float PunchKnockback = 550.f;
@@ -330,8 +347,10 @@ private:
 	void ApplyArmDrive(const FPMArmState& Arm);
 	void UpdateHeld(float DeltaTime);
 	void UpdatePunch(float DeltaTime);
-	/** The moment the fist lands: knock back whatever is in front. */
-	void PunchHit();
+	/** The moment the fist lands: knock back whatever is in front. True if it hit something (OutImpact = where). */
+	bool PunchHit(FVector& OutImpact);
+	/** Where the crosshair points, as a direction from the mage's eyes (third person: the camera sits off to the side). */
+	FVector GetAimDirection() const;
 	void UpdateMoveSpeed();
 	void UpdateInteractPrompt();
 	void UpdateArms();
@@ -378,6 +397,10 @@ private:
 	float PunchTime = -1.f;
 	int32 PunchArm = 0;
 	bool bPunchLanded = false;
+	/** A connecting punch: the fist holds at the impact for a moment, and the camera kicks. */
+	float PunchStickLeft = 0.f;
+	FVector PunchImpact = FVector::ZeroVector;
+	float CameraKick = 0.f;
 	/** World time the arms were last used (punch, pick up, drop, throw); the guard stays up for a while after. */
 	double LastArmUseTime = -1000.0;
 	void NoteArmUse() { LastArmUseTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0; }

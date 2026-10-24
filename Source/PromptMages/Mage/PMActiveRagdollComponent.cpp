@@ -6,6 +6,9 @@
 #include "PMWandComponent.h"
 #include "PMSpellSubsystem.h"
 #include "PMVisualBodyComponent.h"
+#include "PMSpellFX.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
 #include "PromptMages.h"
 #include "PromptMagesCharacter.h"
 #include "Camera/CameraComponent.h"
@@ -528,7 +531,7 @@ void UPMActiveRagdollComponent::UpdateMoveSpeed()
 UPrimitiveComponent* UPMActiveRagdollComponent::FindInteractTarget(FVector& OutHitPoint) const
 {
 	const FVector Eye = GetEyeLocation();
-	const FVector Dir = GetViewRotation().Vector();
+	const FVector Dir = GetAimDirection();
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMInteract), false, GetOwner());
 	FHitResult Hit;
 	if (!GetWorld()->LineTraceSingleByChannel(Hit, Eye, Eye + Dir * InteractRange, ECC_Visibility, Params))
@@ -649,7 +652,7 @@ void UPMActiveRagdollComponent::Throw()
 
 	// Light things fly, heavy things lob.
 	const float Speed = ThrowSpeed * FMath::Lerp(1.f, 0.35f, FMath::Clamp(Mass / CarryMaxKg, 0.f, 1.f));
-	const FVector Dir = (GetViewRotation().Vector() + FVector(0.f, 0.f, 0.15f)).GetSafeNormal();
+	const FVector Dir = (GetAimDirection() + FVector(0.f, 0.f, 0.15f)).GetSafeNormal();
 	Target->SetPhysicsLinearVelocity(Dir * Speed + Movement->Velocity * 0.5f);
 }
 
@@ -745,6 +748,33 @@ void UPMActiveRagdollComponent::UpdateInteractPrompt()
 	}
 }
 
+// --- Aim ---------------------------------------------------------------------------------------
+
+FVector UPMActiveRagdollComponent::GetAimDirection() const
+{
+	const FVector Eye = GetEyeLocation();
+	APlayerController* PC = GetLocalPC();
+	if (!PC)
+	{
+		return GetViewRotation().Vector();
+	}
+	// What the crosshair is on, seen from the camera; then aim at that from the eyes.
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	PC->GetPlayerViewPoint(CameraLocation, CameraRotation);
+	const FVector Far = CameraLocation + CameraRotation.Vector() * 5000.f;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMAim), false, GetOwner());
+	if (const UPrimitiveComponent* Carried = Held.Get())
+	{
+		Params.AddIgnoredComponent(Carried);
+	}
+	FHitResult Hit;
+	const FVector AimPoint = GetWorld()->LineTraceSingleByChannel(Hit, CameraLocation, Far, ECC_Visibility, Params) ? FVector(Hit.ImpactPoint) : Far;
+	const FVector Dir = (AimPoint - Eye).GetSafeNormal();
+	// The crosshair is on something between the camera and the eyes (rare): use the view direction.
+	return FVector::DotProduct(Dir, CameraRotation.Vector()) > 0.2f ? Dir : CameraRotation.Vector();
+}
+
 // --- Punching ------------------------------------------------------------------------------------
 
 void UPMActiveRagdollComponent::Punch()
@@ -761,7 +791,12 @@ void UPMActiveRagdollComponent::Punch()
 	PunchArm = IsWandOut() ? 0 : 1 - PunchArm;
 	PunchTime = 0.f;
 	bPunchLanded = false;
+	PunchStickLeft = 0.f;
 	NoteArmUse();
+	if (PunchSwingSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, PunchSwingSound, GetEyeLocation());
+	}
 }
 
 void UPMActiveRagdollComponent::UpdatePunch(float DeltaTime)
@@ -770,12 +805,28 @@ void UPMActiveRagdollComponent::UpdatePunch(float DeltaTime)
 	{
 		return;
 	}
+	// A connecting fist holds at the impact for a moment (a local hit-stop) before pulling back.
+	if (PunchStickLeft > 0.f)
+	{
+		PunchStickLeft -= DeltaTime;
+		return;
+	}
 	PunchTime += DeltaTime;
 	// The hit lands when the fist is most of the way out.
 	if (!bPunchLanded && PunchTime >= PunchDuration * 0.3f)
 	{
 		bPunchLanded = true;
-		PunchHit();
+		if (PunchHit(PunchImpact))
+		{
+			PunchStickLeft = PunchStickSeconds;
+			CameraKick = 1.f;
+			APMSpellFX::SpawnBurst(GetWorld(), PunchImpact, 16.f, FLinearColor(0.85f, 0.8f, 0.7f), 0.22f);
+			if (PunchHitSound)
+			{
+				UGameplayStatics::PlaySoundAtLocation(this, PunchHitSound, PunchImpact);
+			}
+			UE_LOG(LogPromptMages, Verbose, TEXT("Punch connected at %s"), *PunchImpact.ToCompactString());
+		}
 	}
 	if (PunchTime >= PunchCooldown)
 	{
@@ -783,17 +834,18 @@ void UPMActiveRagdollComponent::UpdatePunch(float DeltaTime)
 	}
 }
 
-void UPMActiveRagdollComponent::PunchHit()
+bool UPMActiveRagdollComponent::PunchHit(FVector& OutImpact)
 {
 	const FVector Eye = GetEyeLocation();
-	const FVector Dir = GetViewRotation().Vector();
+	const FVector Dir = GetAimDirection();
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(PMPunch), false, GetOwner());
 	FHitResult Hit;
 	if (!GetWorld()->SweepSingleByChannel(Hit, Eye, Eye + Dir * PunchReach, FQuat::Identity, ECC_Visibility,
 		FCollisionShape::MakeSphere(18.f), Params))
 	{
-		return;
+		return false;
 	}
+	OutImpact = Hit.ImpactPoint;
 
 	// Another mage (or anything that walks): shove them back and up a little.
 	if (ACharacter* Victim = Cast<ACharacter>(Hit.GetActor()))
@@ -805,7 +857,7 @@ void UPMActiveRagdollComponent::PunchHit()
 			VictimBody->Stagger(Dir, PunchStagger);
 		}
 		UE_LOG(LogPromptMages, Verbose, TEXT("Punched %s"), *Victim->GetName());
-		return;
+		return true;
 	}
 
 	UPrimitiveComponent* Comp = Hit.GetComponent();
@@ -814,13 +866,13 @@ void UPMActiveRagdollComponent::PunchHit()
 		if (Spawned->IsMystery())
 		{
 			Spawned->RevealMystery(); // Punching a Mystery Crate opens it too.
-			return;
+			return true;
 		}
 		Comp = Spawned->GetBody();
 	}
 	if (!Comp || !Comp->IsSimulatingPhysics())
 	{
-		return; // Punched a wall. Ouch.
+		return true; // Punched a wall. Ouch (it still connects).
 	}
 
 	// Light things fly, heavy things barely budge. Knock it mostly forward and a bit up, even when
@@ -830,6 +882,7 @@ void UPMActiveRagdollComponent::PunchHit()
 	const FVector Push = (Dir.GetSafeNormal2D() + FVector(0.f, 0.f, FMath::Max(Dir.Z, 0.f) + 0.35f)).GetSafeNormal();
 	Comp->AddImpulseAtLocation(Push * Speed * Mass, Hit.ImpactPoint);
 	UE_LOG(LogPromptMages, Verbose, TEXT("Punched %s (%.0f kg) at %.0f cm/s"), *PMRagdoll::NameOf(Comp), Mass, Speed);
+	return true;
 }
 
 // --- Staggering ---------------------------------------------------------------------------------
@@ -960,8 +1013,9 @@ void UPMActiveRagdollComponent::UpdateArms()
 			const float T = PunchTime / PunchDuration;
 			const float Out = T < 0.4f ? FMath::InterpEaseOut(0.f, 1.f, T / 0.4f, 2.f) : 1.f - (T - 0.4f) / 0.6f;
 			const FVector Guard = Eye + Forward * 35.f + Right * Arm.Side * 18.f - Up * 16.f;
-			const FVector Strike = Eye + Forward * PunchReach + Right * Arm.Side * 4.f - Up * 6.f;
-			PlaceHand(Arm, true, FMath::Lerp(Guard, Strike, Out));
+			const FVector Strike = PunchStickLeft > 0.f ? PunchImpact
+				: Eye + GetAimDirection() * PunchReach + Right * Arm.Side * 4.f - Up * 6.f;
+			PlaceHand(Arm, true, PunchStickLeft > 0.f ? Strike : FMath::Lerp(Guard, Strike, Out));
 			SetFist(i, true);
 			continue;
 		}
@@ -1060,6 +1114,14 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 	}
 	Camera->SetWorldLocation(CameraLocation);
 	Camera->SetFieldOfView(FieldOfView);
+
+	// Punch kick: a quick nod up and back that springs back (visual only; your aim doesn't move).
+	CameraKick = FMath::FInterpTo(CameraKick, 0.f, DeltaTime, PunchCameraKickRecovery);
+	Camera->ClearAdditiveOffset();
+	if (CameraKick > 0.01f)
+	{
+		Camera->AddAdditiveOffset(FTransform(FRotator(PunchCameraKick * CameraKick, 0.f, 0.f), FVector(-3.f * CameraKick, 0.f, 0.f)), 0.f);
+	}
 }
 
 // --- Console commands for testing ----------------------------------------------------------------
