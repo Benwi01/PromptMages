@@ -9,6 +9,20 @@
 class UMaterialInstanceDynamic;
 class UPointLightComponent;
 class UStaticMeshComponent;
+class UNiagaraComponent;
+class UNiagaraSystem;
+class USceneComponent;
+
+/** Niagara spell effects. Each sets the user parameters Color (linear colour) and Scale (float). */
+namespace PMVFX
+{
+	/** One-shot at a spot. Returns nullptr when the slot is empty or the asset is missing (callers fall back to greybox). */
+	PROMPTMAGES_API UNiagaraComponent* Spawn(UWorld* World, const TSoftObjectPtr<UNiagaraSystem>& System, const FVector& Location,
+		const FRotator& Rotation, const FLinearColor& Color, float Scale);
+	/** Follows Parent (trails). */
+	PROMPTMAGES_API UNiagaraComponent* SpawnAttached(USceneComponent* Parent, const TSoftObjectPtr<UNiagaraSystem>& System,
+		const FLinearColor& Color, float Scale);
+}
 
 UENUM()
 enum class EPMFXShape : uint8

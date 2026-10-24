@@ -11,6 +11,7 @@ class UPointLightComponent;
 class UProjectileMovementComponent;
 class USphereComponent;
 class UStaticMeshComponent;
+class UNiagaraComponent;
 
 UCLASS()
 class PROMPTMAGES_API APMSpellProjectile : public AActor
@@ -51,6 +52,10 @@ private:
 
 	UPROPERTY(VisibleAnywhere, Category = "Prompt Mages")
 	TObjectPtr<UProjectileMovementComponent> Movement;
+
+	/** The trail; it stops emitting at impact and its last particles fade out before the bolt is removed. */
+	UPROPERTY()
+	TObjectPtr<UNiagaraComponent> Trail;
 
 	EPMSpell Spell = EPMSpell::Fireball;
 	TWeakObjectPtr<AActor> Caster;

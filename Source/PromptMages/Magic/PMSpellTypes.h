@@ -6,6 +6,7 @@
 #include "PMSpellTypes.generated.h"
 
 class USoundBase;
+class UNiagaraSystem;
 
 UENUM(BlueprintType)
 enum class EPMSpell : uint8
@@ -36,6 +37,22 @@ struct FPMSpellSettings
 	/** Played at the wand tip when you cast it (empty = silent). */
 	UPROPERTY(EditAnywhere, Category = "Spell")
 	TObjectPtr<USoundBase> CastSound;
+
+	/** Niagara effect at the wand tip when you cast (empty = none). */
+	UPROPERTY(EditAnywhere, Category = "Spell|Effects")
+	TSoftObjectPtr<UNiagaraSystem> CastEffect;
+
+	/** Fireball/Frost: the trail that follows the bolt. Gust: the wind. Tether: the beam (gets User.BeamEnd). */
+	UPROPERTY(EditAnywhere, Category = "Spell|Effects")
+	TSoftObjectPtr<UNiagaraSystem> TravelEffect;
+
+	/** Where it lands: the explosion, the frost shatter, the tether's grab spark. */
+	UPROPERTY(EditAnywhere, Category = "Spell|Effects")
+	TSoftObjectPtr<UNiagaraSystem> ImpactEffect;
+
+	/** Makes all of this spell's effects bigger or smaller (also scales with blast radius / range). */
+	UPROPERTY(EditAnywhere, Category = "Spell|Effects")
+	float EffectScale = 1.f;
 };
 
 /** Fixed look of one wand spell (name and colour). */

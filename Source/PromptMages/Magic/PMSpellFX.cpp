@@ -6,6 +6,52 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "NiagaraComponent.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
+
+namespace PMVFX
+{
+	static void SetParams(UNiagaraComponent* FX, const FLinearColor& Color, float Scale)
+	{
+		FX->SetVariableLinearColor(TEXT("Color"), Color);
+		FX->SetVariableFloat(TEXT("Scale"), Scale);
+	}
+
+	UNiagaraComponent* Spawn(UWorld* World, const TSoftObjectPtr<UNiagaraSystem>& System, const FVector& Location,
+		const FRotator& Rotation, const FLinearColor& Color, float Scale)
+	{
+		UNiagaraSystem* Asset = System.IsNull() ? nullptr : System.LoadSynchronous();
+		if (!World || !Asset)
+		{
+			return nullptr;
+		}
+		UNiagaraComponent* FX = UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, Asset, Location, Rotation, FVector::OneVector, true, false);
+		if (FX)
+		{
+			SetParams(FX, Color, Scale);
+			FX->Activate(true);
+		}
+		return FX;
+	}
+
+	UNiagaraComponent* SpawnAttached(USceneComponent* Parent, const TSoftObjectPtr<UNiagaraSystem>& System, const FLinearColor& Color, float Scale)
+	{
+		UNiagaraSystem* Asset = System.IsNull() ? nullptr : System.LoadSynchronous();
+		if (!Parent || !Asset)
+		{
+			return nullptr;
+		}
+		UNiagaraComponent* FX = UNiagaraFunctionLibrary::SpawnSystemAttached(Asset, Parent, NAME_None, FVector::ZeroVector, FRotator::ZeroRotator,
+			EAttachLocation::SnapToTarget, false, false);
+		if (FX)
+		{
+			SetParams(FX, Color, Scale);
+			FX->Activate(true);
+		}
+		return FX;
+	}
+}
 
 APMSpellFX::APMSpellFX()
 {

@@ -16,6 +16,7 @@
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "TimerManager.h"
+#include "NiagaraComponent.h"
 
 namespace PMSpellHelpers
 {
@@ -121,6 +122,14 @@ void APMSpellProjectile::Launch(EPMSpell InSpell, AActor* InCaster, const FVecto
 	Movement->Velocity = Direction.GetSafeNormal() * Movement->InitialSpeed;
 	Movement->OnProjectileStop.AddDynamic(this, &APMSpellProjectile::OnStop);
 	Movement->Activate();
+
+	if (Wand)
+	{
+		const FPMSpellSettings& Settings = Wand->GetSpellSettings(Spell);
+		Trail = PMVFX::SpawnAttached(Collision, Settings.TravelEffect, Def.Color, Settings.EffectScale);
+		// The trail effect draws the glowing bolt itself; the plain placeholder ball is only a fallback.
+		Core->SetHiddenInGame(Trail != nullptr);
+	}
 }
 
 void APMSpellProjectile::OnStop(const FHitResult& Hit)
@@ -130,7 +139,14 @@ void APMSpellProjectile::OnStop(const FHitResult& Hit)
 
 void APMSpellProjectile::LifeSpanExpired()
 {
-	Detonate(GetActorLocation());
+	if (!bDetonated)
+	{
+		Detonate(GetActorLocation());
+		if (Trail)
+		{
+			return; // Detonate gave the trail time to fade; the next expiry removes the bolt.
+		}
+	}
 	Super::LifeSpanExpired();
 }
 
@@ -150,7 +166,21 @@ void APMSpellProjectile::Detonate(const FVector& Location)
 	{
 		Shatter(GetWorld(), Location, Caster.Get());
 	}
-	Destroy();
+
+	// Stop and vanish, but let the trail's last particles fade before removing the bolt.
+	Movement->StopMovementImmediately();
+	Collision->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Core->SetHiddenInGame(true);
+	Light->SetVisibility(false);
+	if (Trail)
+	{
+		Trail->Deactivate();
+		SetLifeSpan(1.5f);
+	}
+	else
+	{
+		Destroy();
+	}
 }
 
 void APMSpellProjectile::Explode(UWorld* World, const FVector& Center, AActor* InCaster)
@@ -163,7 +193,11 @@ void APMSpellProjectile::Explode(UWorld* World, const FVector& Center, AActor* I
 	const float Radius = Wand ? Wand->FireballRadius : 350.f;
 	const float Push = Wand ? Wand->FireballPush : 70000.f;
 	const float Launch = Wand ? Wand->FireballLaunch : 900.f;
-	APMSpellFX::SpawnBurst(World, Center, Radius * 0.6f, FPMSpellDef::Get(EPMSpell::Fireball).Color, 0.3f);
+	const FLinearColor FireColor = FPMSpellDef::Get(EPMSpell::Fireball).Color;
+	if (!Wand || !PMVFX::Spawn(World, Wand->Fireball.ImpactEffect, Center, FRotator::ZeroRotator, FireColor, Wand->Fireball.EffectScale * Radius / 350.f))
+	{
+		APMSpellFX::SpawnBurst(World, Center, Radius * 0.6f, FireColor, 0.3f);
+	}
 
 	TArray<UPrimitiveComponent*> Bodies;
 	TArray<ACharacter*> Characters;
@@ -211,7 +245,11 @@ void APMSpellProjectile::Shatter(UWorld* World, const FVector& Center, AActor* I
 	}
 	const UPMWandComponent* Wand = InCaster ? InCaster->FindComponentByClass<UPMWandComponent>() : nullptr;
 	const float Radius = Wand ? Wand->FrostRadius : 160.f;
-	APMSpellFX::SpawnBurst(World, Center, Radius * 0.7f, FPMSpellDef::Get(EPMSpell::Frost).Color, 0.25f);
+	const FLinearColor FrostColor = FPMSpellDef::Get(EPMSpell::Frost).Color;
+	if (!Wand || !PMVFX::Spawn(World, Wand->Frost.ImpactEffect, Center, FRotator::ZeroRotator, FrostColor, Wand->Frost.EffectScale * Radius / 160.f))
+	{
+		APMSpellFX::SpawnBurst(World, Center, Radius * 0.7f, FrostColor, 0.25f);
+	}
 
 	TArray<UPrimitiveComponent*> Bodies;
 	TArray<ACharacter*> Characters;

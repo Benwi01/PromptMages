@@ -19,6 +19,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Kismet/GameplayStatics.h"
+#include "NiagaraComponent.h"
 #include "Sound/SoundBase.h"
 
 namespace PMWand
@@ -31,6 +32,21 @@ UPMWandComponent::UPMWandComponent()
 	PrimaryComponentTick.bCanEverTick = true;
 	// After the visible body is posed, so the wand sits exactly in this frame's fist.
 	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
+
+	// Default Niagara effects in /Game/PromptMages/VFX. Each reads User.Color and User.Scale; the tether beam also
+	// User.BeamStart / User.BeamEnd. Their materials and meshes come from SourceArt/VFX/make_vfx_materials.py.
+	auto Path = [](const TCHAR* Name) { return TSoftObjectPtr<UNiagaraSystem>(FSoftObjectPath(FString::Printf(TEXT("/Game/PromptMages/VFX/%s.%s"), Name, Name))); };
+	Fireball.CastEffect = Path(TEXT("NS_Fireball_Cast"));
+	Fireball.TravelEffect = Path(TEXT("NS_Fireball_Trail"));
+	Fireball.ImpactEffect = Path(TEXT("NS_Fireball_Explosion"));
+	Frost.CastEffect = Path(TEXT("NS_Frost_Cast"));
+	Frost.TravelEffect = Path(TEXT("NS_Frost_Trail"));
+	Frost.ImpactEffect = Path(TEXT("NS_Frost_Shatter"));
+	Gust.CastEffect = Path(TEXT("NS_Gust_Cast"));
+	Gust.TravelEffect = Path(TEXT("NS_Gust_Wind"));
+	Tether.CastEffect = Path(TEXT("NS_Tether_Cast"));
+	Tether.TravelEffect = Path(TEXT("NS_Tether_Beam"));
+	Tether.ImpactEffect = Path(TEXT("NS_Tether_Grab"));
 }
 
 void UPMWandComponent::BeginPlay()
@@ -337,6 +353,7 @@ bool UPMWandComponent::CastSpell()
 	{
 		UGameplayStatics::PlaySoundAtLocation(this, Settings.CastSound, Tip);
 	}
+	PMVFX::Spawn(GetWorld(), Settings.CastEffect, Tip, Direction.Rotation(), Def.Color, Settings.EffectScale);
 	if (UPMActiveRagdollComponent* Body = GetOwner()->FindComponentByClass<UPMActiveRagdollComponent>())
 	{
 		Body->AddCameraKick(CastCameraKick);
@@ -371,7 +388,10 @@ bool UPMWandComponent::CastSpell()
 
 void UPMWandComponent::CastGust(const FVector& Tip, const FVector& Direction)
 {
-	APMSpellFX::SpawnCone(GetWorld(), Tip, Direction, GustRange * 0.6f, GustRange * 0.25f, FPMSpellDef::Get(EPMSpell::Gust).Color, 0.3f);
+	if (!PMVFX::Spawn(GetWorld(), Gust.TravelEffect, Tip, Direction.Rotation(), FPMSpellDef::Get(EPMSpell::Gust).Color, Gust.EffectScale * GustRange / 700.f))
+	{
+		APMSpellFX::SpawnCone(GetWorld(), Tip, Direction, GustRange * 0.6f, GustRange * 0.25f, FPMSpellDef::Get(EPMSpell::Gust).Color, 0.3f);
+	}
 
 	TArray<FOverlapResult> Overlaps;
 	FCollisionObjectQueryParams Objects;
@@ -422,6 +442,18 @@ void UPMWandComponent::CastGust(const FVector& Tip, const FVector& Direction)
 	}
 }
 
+void UPMWandComponent::TetherBeam(const FVector& From, const FVector& To)
+{
+	const FLinearColor Color = FPMSpellDef::Get(EPMSpell::Tether).Color;
+	if (UNiagaraComponent* Beam = PMVFX::Spawn(GetWorld(), Tether.TravelEffect, From, (To - From).Rotation(), Color, Tether.EffectScale))
+	{
+		Beam->SetVariableVec3(TEXT("BeamStart"), From);
+		Beam->SetVariableVec3(TEXT("BeamEnd"), To);
+		return;
+	}
+	APMSpellFX::SpawnBeam(GetWorld(), From, To, Color, 0.3f);
+}
+
 void UPMWandComponent::CastTether(const FVector& Tip, const FVector& Direction, const FVector& AimPoint)
 {
 	ACharacter* Self = Cast<ACharacter>(GetOwner());
@@ -431,10 +463,11 @@ void UPMWandComponent::CastTether(const FVector& Tip, const FVector& Direction, 
 	const FVector End = Tip + Direction * TetherRange;
 	if (!GetWorld()->LineTraceSingleByChannel(Hit, Tip, End, ECC_Visibility, Params))
 	{
-		APMSpellFX::SpawnBeam(GetWorld(), Tip, End, FPMSpellDef::Get(EPMSpell::Tether).Color, 0.2f);
+		TetherBeam(Tip, End);
 		return; // Missed.
 	}
-	APMSpellFX::SpawnBeam(GetWorld(), Tip, Hit.ImpactPoint, FPMSpellDef::Get(EPMSpell::Tether).Color, 0.35f);
+	TetherBeam(Tip, Hit.ImpactPoint);
+	PMVFX::Spawn(GetWorld(), Tether.ImpactEffect, Hit.ImpactPoint, Hit.ImpactNormal.Rotation(), FPMSpellDef::Get(EPMSpell::Tether).Color, Tether.EffectScale);
 
 	UPrimitiveComponent* Target = Hit.GetComponent();
 	if (APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Hit.GetActor()))

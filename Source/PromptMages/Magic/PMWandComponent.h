@@ -157,6 +157,9 @@ private:
 
 	void OnToggleWand() { SetWandOut(!bWandOut); }
 	void OnCastPressed();
+	/** The tether beam effect from the wand to where it grabbed (or reached). */
+	void TetherBeam(const FVector& From, const FVector& To);
+
 	void OnSelect1() { SelectSpell(EPMSpell::Fireball); }
 	void OnSelect2() { SelectSpell(EPMSpell::Gust); }
 	void OnSelect3() { SelectSpell(EPMSpell::Tether); }
