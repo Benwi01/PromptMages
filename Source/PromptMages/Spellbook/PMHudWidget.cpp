@@ -399,7 +399,7 @@ void UPMHudWidget::RefreshStatus()
 			const EPMSpell Spell = static_cast<EPMSpell>(i);
 			const FPMSpellDef& Def = FPMSpellDef::Get(Spell);
 			const float SpellCooldown = Wand->GetCooldownRemaining(Spell);
-			FString Entry = FString::Printf(TEXT("%d %s %d"), i + 1, *Def.Name, FMath::RoundToInt(Def.ManaCost));
+			FString Entry = FString::Printf(TEXT("%d %s %d"), i + 1, *Def.Name, FMath::RoundToInt(Wand->GetSpellSettings(Spell).ManaCost));
 			if (SpellCooldown > 0.f)
 			{
 				Entry += TEXT(" ...");

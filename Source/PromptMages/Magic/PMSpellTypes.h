@@ -15,21 +15,36 @@ enum class EPMSpell : uint8
 	Count UMETA(Hidden)
 };
 
-/** Static tuning for one wand spell. */
+/** A wand spell's cost and cooldown (editable on the Wand component). */
+USTRUCT(BlueprintType)
+struct FPMSpellSettings
+{
+	GENERATED_BODY()
+
+	FPMSpellSettings(float InManaCost = 20.f, float InCooldown = 1.f) : ManaCost(InManaCost), Cooldown(InCooldown) {}
+
+	/** Mana it costs to cast. */
+	UPROPERTY(EditAnywhere, Category = "Spell")
+	float ManaCost = 20.f;
+
+	/** Seconds before you can cast it again. */
+	UPROPERTY(EditAnywhere, Category = "Spell")
+	float Cooldown = 1.f;
+};
+
+/** Fixed look of one wand spell (name and colour). */
 struct FPMSpellDef
 {
 	FString Name;
-	float ManaCost = 20.f;
-	float Cooldown = 1.f;
 	FLinearColor Color = FLinearColor::White;
 
 	static const FPMSpellDef& Get(EPMSpell Spell)
 	{
 		static const FPMSpellDef Defs[] = {
-			{ TEXT("Fireball"), 30.f, 1.2f, FLinearColor(1.f, 0.35f, 0.05f) },
-			{ TEXT("Gust"),     20.f, 0.8f, FLinearColor(0.75f, 0.9f, 1.f) },
-			{ TEXT("Tether"),   15.f, 0.6f, FLinearColor(0.3f, 1.f, 0.4f) },
-			{ TEXT("Frost"),    25.f, 1.0f, FLinearColor(0.4f, 0.8f, 1.f) },
+			{ TEXT("Fireball"), FLinearColor(1.f, 0.35f, 0.05f) },
+			{ TEXT("Gust"),     FLinearColor(0.75f, 0.9f, 1.f) },
+			{ TEXT("Tether"),   FLinearColor(0.3f, 1.f, 0.4f) },
+			{ TEXT("Frost"),    FLinearColor(0.4f, 0.8f, 1.f) },
 		};
 		return Defs[FMath::Clamp(static_cast<int32>(Spell), 0, 3)];
 	}

@@ -33,6 +33,9 @@ public:
 	float GetMana() const { return Mana; }
 	float GetMaxMana() const { return MaxMana; }
 	float GetCooldownRemaining(EPMSpell Spell) const;
+	const FPMSpellSettings& GetSpellSettings(EPMSpell Spell) const;
+	/** How far (cm) the wand hand is flicked forward right now by a cast (0 when resting). */
+	float GetCastFlick() const { return CastKick * CastKickDistance; }
 
 	void SetWandOut(bool bOut);
 	void SelectSpell(EPMSpell Spell);
@@ -57,6 +60,72 @@ public:
 	/** Moves the whole wand away from where the fist holds it, in cm. X = forward, Y = right, Z = up (as you look). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
 	FVector WandGripOffset = FVector::ZeroVector;
+
+	// --- Spells (cost and cooldown) ---
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	FPMSpellSettings Fireball = FPMSpellSettings(30.f, 1.2f);
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	FPMSpellSettings Gust = FPMSpellSettings(20.f, 0.8f);
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	FPMSpellSettings Tether = FPMSpellSettings(15.f, 0.6f);
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	FPMSpellSettings Frost = FPMSpellSettings(25.f, 1.0f);
+
+	/** Fireball: flight speed (cm/s). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	float FireballSpeed = 2200.f;
+
+	/** Fireball: blast radius (cm). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	float FireballRadius = 350.f;
+
+	/** Fireball: how hard the blast throws objects (divided by their mass: 70000 sends a 70 kg thing at 10 m/s). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	float FireballPush = 70000.f;
+
+	/** Fireball: how far the blast launches mages (cm/s at the centre). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	float FireballLaunch = 900.f;
+
+	/** Frost bolt: flight speed (cm/s). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	float FrostSpeed = 3200.f;
+
+	/** Frost bolt: freeze radius (cm). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	float FrostRadius = 160.f;
+
+	/** Frost bolt: seconds objects stay frozen. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	float FrostObjectSeconds = 4.f;
+
+	/** Frost bolt: seconds mages stay frozen. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Spells")
+	float FrostMageSeconds = 2.5f;
+
+	// --- Cast feel ---
+
+	/** On cast the wand hand flicks forward this far (cm) and springs back. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
+	float CastKickDistance = 8.f;
+
+	/** On cast the camera kicks up this many degrees. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
+	float CastCameraKick = 1.f;
+
+	/** Crystal glow: when the selected spell is ready, when it isn't (cooldown or short of mana), and the flash on a cast. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
+	float ReadyGlow = 6.f;
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
+	float NotReadyGlow = 0.6f;
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Look")
+	float CastFlashGlow = 40.f;
 
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand")
 	float MaxMana = 100.f;
@@ -114,5 +183,10 @@ private:
 	bool bWandOut = false;
 	EPMSpell Selected = EPMSpell::Fireball;
 	float Mana = 100.f;
+	/** 1 right after a cast, easing back to 0 (drives the flick, flash and camera kick). */
+	float CastKick = 0.f;
+	/** The crystal's current glow (eases toward ready / not ready). */
+	float CrystalGlow = 6.f;
+	void UpdateCrystal(float DeltaTime);
 	double LastCastTime[static_cast<int32>(EPMSpell::Count)] = { -100.0, -100.0, -100.0, -100.0 };
 };

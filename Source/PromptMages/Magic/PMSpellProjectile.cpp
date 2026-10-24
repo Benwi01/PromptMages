@@ -1,6 +1,7 @@
 // Prompt-Mages: wand projectiles (Fireball, Frost bolt).
 
 #include "PMSpellProjectile.h"
+#include "PMWandComponent.h"
 #include "PMObjectLibrary.h"
 #include "PMSpawnedObject.h"
 #include "PMSpellFX.h"
@@ -114,7 +115,8 @@ void APMSpellProjectile::Launch(EPMSpell InSpell, AActor* InCaster, const FVecto
 	// Fireballs lob in a gentle arc; frost bolts fly straight and fast.
 	const bool bFire = Spell == EPMSpell::Fireball;
 	Movement->ProjectileGravityScale = bFire ? 0.35f : 0.f;
-	Movement->InitialSpeed = bFire ? 2200.f : 3200.f;
+	const UPMWandComponent* Wand = InCaster ? InCaster->FindComponentByClass<UPMWandComponent>() : nullptr;
+	Movement->InitialSpeed = bFire ? (Wand ? Wand->FireballSpeed : 2200.f) : (Wand ? Wand->FrostSpeed : 3200.f);
 	Movement->MaxSpeed = Movement->InitialSpeed;
 	Movement->Velocity = Direction.GetSafeNormal() * Movement->InitialSpeed;
 	Movement->OnProjectileStop.AddDynamic(this, &APMSpellProjectile::OnStop);
@@ -157,7 +159,10 @@ void APMSpellProjectile::Explode(UWorld* World, const FVector& Center, AActor* I
 	{
 		return;
 	}
-	constexpr float Radius = 350.f;
+	const UPMWandComponent* Wand = InCaster ? InCaster->FindComponentByClass<UPMWandComponent>() : nullptr;
+	const float Radius = Wand ? Wand->FireballRadius : 350.f;
+	const float Push = Wand ? Wand->FireballPush : 70000.f;
+	const float Launch = Wand ? Wand->FireballLaunch : 900.f;
 	APMSpellFX::SpawnBurst(World, Center, Radius * 0.6f, FPMSpellDef::Get(EPMSpell::Fireball).Color, 0.3f);
 
 	TArray<UPrimitiveComponent*> Bodies;
@@ -171,7 +176,7 @@ void APMSpellProjectile::Explode(UWorld* World, const FVector& Center, AActor* I
 		const float Falloff = 1.f - FMath::Clamp(ToBody.Size() / Radius, 0.f, 1.f);
 		const FVector Dir = (ToBody.GetSafeNormal() + FVector(0.f, 0.f, 0.5f)).GetSafeNormal();
 		// Mass matters: a crate flies, an anvil shuffles.
-		const float SpeedChange = FMath::Clamp(70000.f / FMath::Max(Body->GetMass(), 1.f), 40.f, 1100.f) * Falloff;
+		const float SpeedChange = FMath::Clamp(Push / FMath::Max(Body->GetMass(), 1.f), 40.f, 1100.f) * Falloff;
 		Body->AddImpulse(Dir * SpeedChange, NAME_None, /*bVelChange*/ true);
 
 		if (APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Body->GetOwner()))
@@ -186,7 +191,7 @@ void APMSpellProjectile::Explode(UWorld* World, const FVector& Center, AActor* I
 	{
 		const FVector ToChar = Character->GetActorLocation() - Center;
 		const float Falloff = 1.f - FMath::Clamp(ToChar.Size() / Radius, 0.f, 1.f);
-		Character->LaunchCharacter(ToChar.GetSafeNormal2D() * 900.f * Falloff + FVector(0.f, 0.f, 450.f * Falloff), true, true);
+		Character->LaunchCharacter(ToChar.GetSafeNormal2D() * Launch * Falloff + FVector(0.f, 0.f, Launch * 0.5f * Falloff), true, true);
 	}
 
 	if (Ignited > 0)
@@ -204,7 +209,8 @@ void APMSpellProjectile::Shatter(UWorld* World, const FVector& Center, AActor* I
 	{
 		return;
 	}
-	constexpr float Radius = 160.f;
+	const UPMWandComponent* Wand = InCaster ? InCaster->FindComponentByClass<UPMWandComponent>() : nullptr;
+	const float Radius = Wand ? Wand->FrostRadius : 160.f;
 	APMSpellFX::SpawnBurst(World, Center, Radius * 0.7f, FPMSpellDef::Get(EPMSpell::Frost).Color, 0.25f);
 
 	TArray<UPrimitiveComponent*> Bodies;
@@ -215,12 +221,12 @@ void APMSpellProjectile::Shatter(UWorld* World, const FVector& Center, AActor* I
 	{
 		if (APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Body->GetOwner()))
 		{
-			Spawned->Freeze(4.f);
+			Spawned->Freeze(Wand ? Wand->FrostObjectSeconds : 4.f);
 		}
 	}
 	for (ACharacter* Character : Characters)
 	{
-		FreezeCharacter(Character, 2.5f);
+		FreezeCharacter(Character, Wand ? Wand->FrostMageSeconds : 2.5f);
 	}
 }
 

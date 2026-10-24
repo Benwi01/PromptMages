@@ -12,6 +12,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "PMVisualBodyComponent.h"
+#include "PMActiveRagdollComponent.h"
 #include "Engine/OverlapResult.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
@@ -129,6 +130,8 @@ void UPMWandComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 		TryBindInput();
 	}
 	Mana = FMath::Min(MaxMana, Mana + ManaRegenPerSecond * DeltaTime);
+	CastKick = FMath::FInterpTo(CastKick, 0.f, DeltaTime, 12.f);
+	UpdateCrystal(DeltaTime);
 	UpdateWandVisual();
 }
 
@@ -172,7 +175,34 @@ void UPMWandComponent::SelectSpell(EPMSpell Spell)
 float UPMWandComponent::GetCooldownRemaining(EPMSpell Spell) const
 {
 	const int32 Index = static_cast<int32>(Spell);
-	return FMath::Max(0.f, static_cast<float>(LastCastTime[Index] + FPMSpellDef::Get(Spell).Cooldown - GetWorld()->GetTimeSeconds()));
+	return FMath::Max(0.f, static_cast<float>(LastCastTime[Index] + GetSpellSettings(Spell).Cooldown - GetWorld()->GetTimeSeconds()));
+}
+
+const FPMSpellSettings& UPMWandComponent::GetSpellSettings(EPMSpell Spell) const
+{
+	switch (Spell)
+	{
+	case EPMSpell::Gust:   return Gust;
+	case EPMSpell::Tether: return Tether;
+	case EPMSpell::Frost:  return Frost;
+	default:               return Fireball;
+	}
+}
+
+void UPMWandComponent::UpdateCrystal(float DeltaTime)
+{
+	if (!TipMaterial || !bWandOut)
+	{
+		return;
+	}
+	// Bright when the selected spell can be cast, dim while it's cooling down or you're short of mana.
+	const bool bReady = GetCooldownRemaining(Selected) <= 0.f && Mana >= GetSpellSettings(Selected).ManaCost;
+	CrystalGlow = FMath::FInterpTo(CrystalGlow, bReady ? ReadyGlow : NotReadyGlow, DeltaTime, 10.f);
+	// A cast flashes it.
+	TipMaterial->SetScalarParameterValue(TEXT("Glow"), FMath::Lerp(CrystalGlow, CastFlashGlow, CastKick));
+	const FLinearColor Color = FPMSpellDef::Get(Selected).Color;
+	const float Shade = FMath::GetMappedRangeValueClamped(FVector2D(NotReadyGlow, ReadyGlow), FVector2D(0.35f, 1.f), CrystalGlow);
+	TipMaterial->SetVectorParameterValue(FPMObjectLibrary::ColorParameterName, Color * Shade);
 }
 
 bool UPMWandComponent::GetAim(FVector& OutTip, FVector& OutDirection, FVector& OutAimPoint, FVector* OutGrip, FRotator* OutView) const
@@ -279,13 +309,14 @@ bool UPMWandComponent::CastSpell()
 	}
 
 	const FPMSpellDef& Def = FPMSpellDef::Get(Selected);
+	const FPMSpellSettings& Settings = GetSpellSettings(Selected);
 	if (GetCooldownRemaining(Selected) > 0.f)
 	{
 		return false;
 	}
-	if (Mana < Def.ManaCost)
+	if (Mana < Settings.ManaCost)
 	{
-		Toast(FString::Printf(TEXT("Not enough mana for %s (%d / %d)."), *Def.Name, FMath::FloorToInt(Mana), FMath::RoundToInt(Def.ManaCost)));
+		Toast(FString::Printf(TEXT("Not enough mana for %s (%d / %d)."), *Def.Name, FMath::FloorToInt(Mana), FMath::RoundToInt(Settings.ManaCost)));
 		return false;
 	}
 
@@ -295,8 +326,15 @@ bool UPMWandComponent::CastSpell()
 		return false;
 	}
 
-	Mana -= Def.ManaCost;
+	Mana -= Settings.ManaCost;
 	LastCastTime[static_cast<int32>(Selected)] = GetWorld()->GetTimeSeconds();
+
+	// Cast feel: the wand flicks forward, the crystal flashes, the camera kicks.
+	CastKick = 1.f;
+	if (UPMActiveRagdollComponent* Body = GetOwner()->FindComponentByClass<UPMActiveRagdollComponent>())
+	{
+		Body->AddCameraKick(CastCameraKick);
+	}
 
 	switch (Selected)
 	{

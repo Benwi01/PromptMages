@@ -864,7 +864,7 @@ void UPMActiveRagdollComponent::UpdatePunch(float DeltaTime)
 		if (PunchHit(PunchImpact))
 		{
 			PunchStickLeft = PunchStickSeconds;
-			CameraKick = 1.f;
+			AddCameraKick(PunchCameraKick);
 			APMSpellFX::SpawnBurst(GetWorld(), PunchImpact, 16.f, FLinearColor(0.85f, 0.8f, 0.7f), 0.22f);
 			if (PunchHitSound)
 			{
@@ -1068,7 +1068,9 @@ void UPMActiveRagdollComponent::UpdateArms()
 		// The wand hand holds the wand out toward the crosshair.
 		if (bWand && Arm.Side > 0.f)
 		{
-			PlaceHand(Arm, true, Eye + Forward * WandHandOffset.X + Right * WandHandOffset.Y + Up * WandHandOffset.Z);
+			const UPMWandComponent* Wand = GetOwner()->FindComponentByClass<UPMWandComponent>();
+			const float Flick = Wand ? Wand->GetCastFlick() : 0.f; // A cast flicks the wand hand forward.
+			PlaceHand(Arm, true, Eye + Forward * (WandHandOffset.X + Flick) + Right * WandHandOffset.Y + Up * WandHandOffset.Z);
 			SetFist(i, true); // Gripping the wand.
 			continue;
 		}
@@ -1165,7 +1167,7 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 	Camera->ClearAdditiveOffset();
 	if (CameraKick > 0.01f)
 	{
-		Camera->AddAdditiveOffset(FTransform(FRotator(PunchCameraKick * CameraKick, 0.f, 0.f), FVector(-3.f * CameraKick, 0.f, 0.f)), 0.f);
+		Camera->AddAdditiveOffset(FTransform(FRotator(CameraKick, 0.f, 0.f), FVector(-1.5f * CameraKick, 0.f, 0.f)), 0.f);
 	}
 }
 

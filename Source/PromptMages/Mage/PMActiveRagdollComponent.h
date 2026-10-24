@@ -73,6 +73,8 @@ public:
 	 * Strength 0..1 (1 = the hardest hit). Called for hard impacts on the body and when punched.
 	 */
 	void Stagger(const FVector& Direction, float Strength);
+	/** Nod the camera up by this many degrees; it springs back (visual only, aim doesn't move). */
+	void AddCameraKick(float Degrees) { CameraKick = FMath::Max(CameraKick, Degrees); }
 	bool IsPunching() const { return PunchTime >= 0.f && PunchTime < PunchDuration; }
 
 	// --- Body ---
@@ -430,9 +432,10 @@ private:
 	float PunchTime = -1.f;
 	int32 PunchArm = 0;
 	bool bPunchLanded = false;
-	/** A connecting punch: the fist holds at the impact for a moment, and the camera kicks. */
+	/** A connecting punch: the fist holds at the impact for a moment. */
 	float PunchStickLeft = 0.f;
 	FVector PunchImpact = FVector::ZeroVector;
+	/** Current camera kick in degrees (punches, casts), springing back to 0. */
 	float CameraKick = 0.f;
 	/** World time the arms were last used (punch, pick up, drop, throw); the guard stays up for a while after. */
 	double LastArmUseTime = -1000.0;
