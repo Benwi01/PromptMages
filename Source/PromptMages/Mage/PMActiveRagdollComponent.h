@@ -64,8 +64,8 @@ public:
 
 	/** E: pick up / drag what the crosshair is on, or drop what you hold. */
 	void Interact();
-	/** LMB while holding: throw it. */
-	void Throw();
+	/** Throw what you're carrying. Charge 0..1: 0 = gentle toss (ThrowMinPower), 1 = full throw. */
+	void Throw(float Charge = 1.f);
 	/** LMB with empty hands: punch with the next fist (left/right alternate; left only while the wand is out). */
 	void Punch();
 	/**
@@ -207,7 +207,34 @@ public:
 
 	/** Throw speed (cm/s) for a light object; heavier ones go slower. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
-	float ThrowSpeed = 1100.f;
+	float ThrowSpeed = 1400.f;
+
+	/** Hold LMB this long (s) for a full-power throw. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float ThrowChargeSeconds = 0.6f;
+
+	/** A quick tap throws at this fraction of full power. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float ThrowMinPower = 0.4f;
+
+	/** How far (cm) a charging throw pulls the object back toward you at full charge (the wind-up). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float ThrowWindUp = 20.f;
+
+	/** How firmly a carried object follows the camera (spring strength and damping). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float CarryStiffness = 3000.f;
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float CarryDamping = 300.f;
+
+	/** You lose hold of a carried object when it ends up this far (cm) from where it should be. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float CarryLoseDistance = 250.f;
+
+	/** Same for dragged objects. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
+	float DragLoseDistance = 220.f;
 
 	/** Walk speed multiplier when dragging something at DragMaxKg. */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Pick Up")
@@ -324,6 +351,9 @@ private:
 
 	void OnInteractPressed() { Interact(); }
 	void OnThrowPressed();
+	void OnThrowReleased();
+	/** 0..1 how charged the throw is right now (0 when not charging). */
+	float GetThrowCharge() const;
 	void OnHoldFarther();
 	void OnHoldCloser();
 	void OnSprintPressed() { bSprinting = true; }
@@ -383,6 +413,9 @@ private:
 	FString HeldName;
 	float HeldMass = 0.f;
 	bool bDragging = false;
+	/** Holding LMB to charge a throw, and since when. */
+	bool bChargingThrow = false;
+	double ThrowChargeStart = 0.0;
 	/** Carried object's rotation relative to the view's yaw, kept while carrying. */
 	FQuat HeldRelativeRotation = FQuat::Identity;
 	/** Rough radius (cm) of the carried object, to hold it clear of the face and place the hands. */

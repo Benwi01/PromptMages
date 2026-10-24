@@ -257,6 +257,7 @@ void UPMActiveRagdollComponent::TryBindInput()
 	ArmInput->RegisterComponent();
 	ArmInput->BindKey(EKeys::E, IE_Pressed, this, &UPMActiveRagdollComponent::OnInteractPressed);
 	ArmInput->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &UPMActiveRagdollComponent::OnThrowPressed).bConsumeInput = false;
+	ArmInput->BindKey(EKeys::LeftMouseButton, IE_Released, this, &UPMActiveRagdollComponent::OnThrowReleased).bConsumeInput = false;
 	ArmInput->BindKey(EKeys::MouseScrollUp, IE_Pressed, this, &UPMActiveRagdollComponent::OnHoldFarther);
 	ArmInput->BindKey(EKeys::MouseScrollDown, IE_Pressed, this, &UPMActiveRagdollComponent::OnHoldCloser);
 	ArmInput->BindKey(EKeys::LeftShift, IE_Pressed, this, &UPMActiveRagdollComponent::OnSprintPressed);
@@ -322,12 +323,36 @@ void UPMActiveRagdollComponent::OnThrowPressed()
 	}
 	if (Held.IsValid())
 	{
-		Throw();
+		if (!bDragging)
+		{
+			// Hold to charge, release to throw.
+			bChargingThrow = true;
+			ThrowChargeStart = GetWorld()->GetTimeSeconds();
+		}
 	}
 	else
 	{
 		Punch();
 	}
+}
+
+void UPMActiveRagdollComponent::OnThrowReleased()
+{
+	if (bChargingThrow)
+	{
+		const float Charge = GetThrowCharge();
+		bChargingThrow = false;
+		Throw(Charge);
+	}
+}
+
+float UPMActiveRagdollComponent::GetThrowCharge() const
+{
+	if (!bChargingThrow)
+	{
+		return 0.f;
+	}
+	return FMath::Clamp(static_cast<float>(GetWorld()->GetTimeSeconds() - ThrowChargeStart) / FMath::Max(ThrowChargeSeconds, 0.01f), 0.f, 1.f);
 }
 
 void UPMActiveRagdollComponent::OnHoldFarther()
@@ -601,8 +626,8 @@ void UPMActiveRagdollComponent::PickUp(UPrimitiveComponent* Target, const FVecto
 		// Carry: hold it in front of your face, keeping how it was turned relative to you.
 		HeldRadius = FMath::Clamp(Target->Bounds.SphereRadius, 5.f, 80.f);
 		HeldRelativeRotation = ViewYaw.Quaternion().Inverse() * Target->GetComponentQuat();
-		HoldHandle->SetLinearStiffness(1500.f);
-		HoldHandle->SetLinearDamping(200.f);
+		HoldHandle->SetLinearStiffness(CarryStiffness);
+		HoldHandle->SetLinearDamping(CarryDamping);
 		HoldHandle->SetAngularStiffness(1500.f);
 		HoldHandle->SetAngularDamping(500.f);
 		HoldHandle->SetInterpolationSpeed(30.f);
@@ -635,12 +660,13 @@ void UPMActiveRagdollComponent::Drop()
 		HoldHandle->ReleaseComponent();
 	}
 	Held = nullptr;
+	bChargingThrow = false;
 	HeldName.Empty();
 	HeldMass = 0.f;
 	bDragging = false;
 }
 
-void UPMActiveRagdollComponent::Throw()
+void UPMActiveRagdollComponent::Throw(float Charge)
 {
 	UPrimitiveComponent* Target = Held.Get();
 	if (!Target || bDragging)
@@ -650,8 +676,10 @@ void UPMActiveRagdollComponent::Throw()
 	const float Mass = HeldMass;
 	Drop();
 
-	// Light things fly, heavy things lob.
-	const float Speed = ThrowSpeed * FMath::Lerp(1.f, 0.35f, FMath::Clamp(Mass / CarryMaxKg, 0.f, 1.f));
+	// Light things fly, heavy things lob; a quick tap tosses, a full charge hurls.
+	const float Power = FMath::Lerp(ThrowMinPower, 1.f, FMath::Clamp(Charge, 0.f, 1.f));
+	const float Speed = ThrowSpeed * Power * FMath::Lerp(1.f, 0.35f, FMath::Clamp(Mass / CarryMaxKg, 0.f, 1.f));
+	UE_LOG(LogPromptMages, Verbose, TEXT("Threw %s at %.0f cm/s (charge %.2f)"), *PMRagdoll::NameOf(Target), Speed, Charge);
 	const FVector Dir = (GetAimDirection() + FVector(0.f, 0.f, 0.15f)).GetSafeNormal();
 	Target->SetPhysicsLinearVelocity(Dir * Speed + Movement->Velocity * 0.5f);
 }
@@ -684,8 +712,23 @@ void UPMActiveRagdollComponent::UpdateHeld(float DeltaTime)
 		const FRotationMatrix Axes(View);
 		const FVector Fwd = Axes.GetUnitAxis(EAxis::X);
 		const FVector Up = Axes.GetUnitAxis(EAxis::Z);
-		Goal = Eye + Fwd * (HoldDistance + PMRagdoll::HalfSizeAlong(Target, Fwd)) - Up * (PMRagdoll::HalfSizeAlong(Target, Up) * 0.5f);
+		const float Depth = PMRagdoll::HalfSizeAlong(Target, Fwd);
+		// Charging a throw pulls it back toward you (the wind-up).
+		const float Gap = FMath::Max(HoldDistance - ThrowWindUp * GetThrowCharge(), 10.f);
+		Goal = Eye + Fwd * (Gap + Depth) - Up * (PMRagdoll::HalfSizeAlong(Target, Up) * 0.5f);
+		// Up against a wall: hold it just in front of the wall instead of shoving it in.
+		FCollisionQueryParams WallParams(SCENE_QUERY_STAT(PMHoldWall), false, GetOwner());
+		WallParams.AddIgnoredComponent(Target);
+		WallParams.AddIgnoredActor(Target->GetOwner());
+		FHitResult WallHit;
+		if (GetWorld()->SweepSingleByChannel(WallHit, Eye, Goal, FQuat::Identity, ECC_Visibility,
+			FCollisionShape::MakeSphere(FMath::Clamp(Depth * 0.8f, 5.f, 40.f)), WallParams))
+		{
+			Goal = WallHit.Location;
+		}
 		Current = PMRagdoll::BoxCentre(Target);
+		HoldHandle->SetLinearStiffness(CarryStiffness);
+		HoldHandle->SetLinearDamping(CarryDamping);
 		HoldHandle->SetTargetLocationAndRotation(Goal, (ViewYaw.Quaternion() * HeldRelativeRotation).Rotator());
 	}
 	else
@@ -699,7 +742,7 @@ void UPMActiveRagdollComponent::UpdateHeld(float DeltaTime)
 	}
 
 	// Snagged on something and left behind: let go.
-	if (FVector::DistSquared(Goal, Current) > FMath::Square(bDragging ? 220.f : 160.f))
+	if (FVector::DistSquared(Goal, Current) > FMath::Square(bDragging ? DragLoseDistance : CarryLoseDistance))
 	{
 		Toast(FString::Printf(TEXT("You lost hold of the %s."), *HeldName));
 		Drop();
@@ -717,7 +760,9 @@ void UPMActiveRagdollComponent::UpdateInteractPrompt()
 	{
 		InteractPrompt = bDragging
 			? FString::Printf(TEXT("Dragging %s (%.0f kg)    [E] let go"), *HeldName, HeldMass)
-			: FString::Printf(TEXT("Holding %s    [E] drop    [LMB] throw"), *HeldName);
+			: bChargingThrow
+				? FString::Printf(TEXT("Throw %s    %s"), *HeldName, *FString::ChrN(FMath::RoundToInt(GetThrowCharge() * 10.f), TEXT('|')).RightPad(10))
+				: FString::Printf(TEXT("Holding %s    [E] drop    [LMB] throw (hold to throw harder)"), *HeldName);
 		return;
 	}
 
@@ -1148,12 +1193,12 @@ namespace PMRagdollConsole
 			}
 		}));
 
-	static FAutoConsoleCommandWithWorld Throw(TEXT("pm.Throw"), TEXT("pm.Throw - throw what you're carrying."),
-		FConsoleCommandWithWorldDelegate::CreateLambda([](UWorld* World)
+	static FAutoConsoleCommandWithWorldAndArgs Throw(TEXT("pm.Throw"), TEXT("pm.Throw [charge 0-1] - throw what you're carrying (default: full power)."),
+		FConsoleCommandWithWorldAndArgsDelegate::CreateLambda([](const TArray<FString>& Args, UWorld* World)
 		{
 			if (UPMActiveRagdollComponent* Body = LocalBody(World))
 			{
-				Body->Throw();
+				Body->Throw(Args.Num() > 0 ? FCString::Atof(*Args[0]) : 1.f);
 			}
 		}));
 
