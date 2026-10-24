@@ -5,6 +5,8 @@
 #include "CoreMinimal.h"
 #include "PMSpellTypes.generated.h"
 
+class USoundBase;
+
 UENUM(BlueprintType)
 enum class EPMSpell : uint8
 {
@@ -30,6 +32,10 @@ struct FPMSpellSettings
 	/** Seconds before you can cast it again. */
 	UPROPERTY(EditAnywhere, Category = "Spell")
 	float Cooldown = 1.f;
+
+	/** Played at the wand tip when you cast it (empty = silent). */
+	UPROPERTY(EditAnywhere, Category = "Spell")
+	TObjectPtr<USoundBase> CastSound;
 };
 
 /** Fixed look of one wand spell (name and colour). */

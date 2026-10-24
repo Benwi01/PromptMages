@@ -28,6 +28,8 @@ public:
 	void ShowSpellbook(bool bShow);
 	TSharedPtr<SWidget> GetPromptFocusWidget();
 	void AddToast(const FString& Message);
+	/** Show the key list again for this many seconds (H). */
+	void ShowHelp(float Seconds);
 
 protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
@@ -42,6 +44,8 @@ private:
 	void BuildTree();
 	void RefreshPreview();
 	void RefreshStatus();
+	void RefreshCrosshair(float DeltaTime);
+	void RefreshHelp();
 	void SetPromptText(const FString& Text);
 	UTextBlock* MakeText(const FString& Text, int32 Size, const FLinearColor& Color);
 
@@ -103,6 +107,14 @@ private:
 	};
 	TArray<FToast> Toasts;
 	FString CurrentSuggestion;
+
+	/** 0 = normal crosshair, 1 = on target (eased). */
+	float CrosshairTarget = 0.f;
+	/** The outline last put on the crosshair font (re-applied only when the setting changes). */
+	int32 AppliedOutline = -1;
+	FLinearColor AppliedOutlineColor = FLinearColor::Transparent;
+	/** The key list shows until this world time, then fades. */
+	double HelpUntil = -1.0;
 
 	static constexpr double ToastSeconds = 5.0;
 	static constexpr int32 MaxToasts = 5;

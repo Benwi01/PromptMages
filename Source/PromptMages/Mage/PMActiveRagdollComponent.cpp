@@ -432,6 +432,10 @@ void UPMActiveRagdollComponent::UpdateMotors(float DeltaTime)
 	{
 		const float Hardness = FMath::Clamp(BodyFallSpeed / FMath::Max(LandingWobbleFullSpeed, 1.f), 0.f, 1.f);
 		MotorDip = FMath::Max(MotorDip, LandingWobble * Hardness);
+		if (LandingSound && BodyFallSpeed >= LandingSoundMinSpeed)
+		{
+			UGameplayStatics::PlaySoundAtLocation(this, LandingSound, Mesh->GetComponentLocation(), FMath::Lerp(0.4f, 1.f, Hardness));
+		}
 		UE_LOG(LogPromptMages, Verbose, TEXT("Landing wobble %.2f (landed at %.0f cm/s)"), LandingWobble * Hardness, BodyFallSpeed);
 		BodyFallSpeed = 0.f;
 	}
@@ -585,6 +589,10 @@ void UPMActiveRagdollComponent::Interact()
 	}
 	if (Held.IsValid())
 	{
+		if (DropSound)
+		{
+			UGameplayStatics::PlaySoundAtLocation(this, DropSound, Held->GetComponentLocation());
+		}
 		Drop();
 		return;
 	}
@@ -646,6 +654,10 @@ void UPMActiveRagdollComponent::PickUp(UPrimitiveComponent* Target, const FVecto
 		HoldHandle->SetInterpolationSpeed(10.f);
 		HoldHandle->GrabComponentAtLocation(Target, NAME_None, HitPoint);
 	}
+	if (PickUpSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, PickUpSound, HitPoint);
+	}
 	UE_LOG(LogPromptMages, Verbose, TEXT("%s %s (%.0f kg)"), bDragging ? TEXT("Dragging") : TEXT("Carrying"), *HeldName, HeldMass);
 }
 
@@ -682,6 +694,10 @@ void UPMActiveRagdollComponent::Throw(float Charge)
 	UE_LOG(LogPromptMages, Verbose, TEXT("Threw %s at %.0f cm/s (charge %.2f)"), *PMRagdoll::NameOf(Target), Speed, Charge);
 	const FVector Dir = (GetAimDirection() + FVector(0.f, 0.f, 0.15f)).GetSafeNormal();
 	Target->SetPhysicsLinearVelocity(Dir * Speed + Movement->Velocity * 0.5f);
+	if (ThrowSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, ThrowSound, Target->GetComponentLocation(), Power);
+	}
 }
 
 void UPMActiveRagdollComponent::UpdateHeld(float DeltaTime)
@@ -745,6 +761,10 @@ void UPMActiveRagdollComponent::UpdateHeld(float DeltaTime)
 	if (FVector::DistSquared(Goal, Current) > FMath::Square(bDragging ? DragLoseDistance : CarryLoseDistance))
 	{
 		Toast(FString::Printf(TEXT("You lost hold of the %s."), *HeldName));
+		if (DropSound)
+		{
+			UGameplayStatics::PlaySoundAtLocation(this, DropSound, Current);
+		}
 		Drop();
 	}
 }
@@ -752,6 +772,7 @@ void UPMActiveRagdollComponent::UpdateHeld(float DeltaTime)
 void UPMActiveRagdollComponent::UpdateInteractPrompt()
 {
 	InteractPrompt.Reset();
+	bAimOnTarget = false;
 	if (!GetLocalPC())
 	{
 		return;
@@ -770,8 +791,15 @@ void UPMActiveRagdollComponent::UpdateInteractPrompt()
 	const UPrimitiveComponent* Target = FindInteractTarget(HitPoint);
 	if (!Target)
 	{
+		// Nothing to pick up, but maybe someone to punch.
+		const FVector Eye = GetEyeLocation();
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(PMAimTarget), false, GetOwner());
+		FHitResult Hit;
+		bAimOnTarget = GetWorld()->SweepSingleByChannel(Hit, Eye, Eye + GetAimDirection() * PunchReach, FQuat::Identity, ECC_Visibility,
+			FCollisionShape::MakeSphere(18.f), Params) && Cast<ACharacter>(Hit.GetActor()) != nullptr;
 		return;
 	}
+	bAimOnTarget = true;
 	const APMSpawnedObject* Spawned = Cast<APMSpawnedObject>(Target->GetOwner());
 	const FString Name = PMRagdoll::NameOf(Target);
 	const float Mass = Target->GetMass();
@@ -864,6 +892,7 @@ void UPMActiveRagdollComponent::UpdatePunch(float DeltaTime)
 		if (PunchHit(PunchImpact))
 		{
 			PunchStickLeft = PunchStickSeconds;
+			LastPunchHitTime = GetWorld()->GetTimeSeconds();
 			AddCameraKick(PunchCameraKick);
 			APMSpellFX::SpawnBurst(GetWorld(), PunchImpact, 16.f, FLinearColor(0.85f, 0.8f, 0.7f), 0.22f);
 			if (PunchHitSound)
@@ -956,6 +985,10 @@ void UPMActiveRagdollComponent::Stagger(const FVector& Direction, float Strength
 	}
 	// Knock the upper body back so you see the hit land.
 	Mesh->AddImpulse(Direction.GetSafeNormal() * StaggerBodyPush * Strength, PMRagdoll::Spine, true);
+	if (StaggerSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, StaggerSound, Mesh->GetComponentLocation(), FMath::Lerp(0.5f, 1.f, Strength));
+	}
 	UE_LOG(LogPromptMages, Verbose, TEXT("Staggered %.2f"), Strength);
 }
 

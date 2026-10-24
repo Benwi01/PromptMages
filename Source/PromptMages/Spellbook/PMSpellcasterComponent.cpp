@@ -59,6 +59,14 @@ APlayerController* UPMSpellcasterComponent::GetLocalPC() const
 	return (PC && PC->IsLocalController()) ? PC : nullptr;
 }
 
+void UPMSpellcasterComponent::OnHelpPressed()
+{
+	if (Hud && !IsSpellbookOpen())
+	{
+		Hud->ShowHelp(HelpShowAgainSeconds);
+	}
+}
+
 void UPMSpellcasterComponent::TryInitLocalPlayer()
 {
 	APlayerController* PC = GetLocalPC();
@@ -72,6 +80,7 @@ void UPMSpellcasterComponent::TryInitLocalPlayer()
 	CasterInput = NewObject<UInputComponent>(GetOwner(), TEXT("PMSpellcasterInput"));
 	CasterInput->RegisterComponent();
 	CasterInput->BindKey(EKeys::Tab, IE_Pressed, this, &UPMSpellcasterComponent::OnTabPressed);
+	CasterInput->BindKey(EKeys::H, IE_Pressed, this, &UPMSpellcasterComponent::OnHelpPressed).bConsumeInput = false;
 	PC->PushInputComponent(CasterInput);
 
 	if (!TargetMarker)

@@ -18,6 +18,8 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Kismet/GameplayStatics.h"
+#include "Sound/SoundBase.h"
 
 namespace PMWand
 {
@@ -331,6 +333,10 @@ bool UPMWandComponent::CastSpell()
 
 	// Cast feel: the wand flicks forward, the crystal flashes, the camera kicks.
 	CastKick = 1.f;
+	if (Settings.CastSound)
+	{
+		UGameplayStatics::PlaySoundAtLocation(this, Settings.CastSound, Tip);
+	}
 	if (UPMActiveRagdollComponent* Body = GetOwner()->FindComponentByClass<UPMActiveRagdollComponent>())
 	{
 		Body->AddCameraKick(CastCameraKick);

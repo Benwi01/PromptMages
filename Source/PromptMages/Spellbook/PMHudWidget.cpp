@@ -39,6 +39,14 @@ void UPMHudWidget::InitHud(UPMSpellcasterComponent* InCaster)
 	}
 }
 
+void UPMHudWidget::ShowHelp(float Seconds)
+{
+	if (UWorld* World = GetWorld())
+	{
+		HelpUntil = FMath::Max(HelpUntil, World->GetTimeSeconds() + Seconds);
+	}
+}
+
 void UPMHudWidget::NativeDestruct()
 {
 	if (UPMSpellSubsystem* Spells = GetWorld() ? GetWorld()->GetSubsystem<UPMSpellSubsystem>() : nullptr)
@@ -94,6 +102,7 @@ void UPMHudWidget::BuildTree()
 	Crosshair = MakeText(TEXT("+"), 22, HudWhite);
 	Crosshair->SetAutoWrapText(false);
 	Crosshair->SetShadowOffset(FVector2D(1.f, 1.f));
+	Crosshair->SetRenderTransformPivot(FVector2D(0.5f, 0.5f));
 	Place(Crosshair, FAnchors(0.5f, 0.5f), FVector2D(0.5f, 0.5f), FMargin(0.f), true);
 
 	// Cooldown + grip under the crosshair.
@@ -127,7 +136,7 @@ void UPMHudWidget::BuildTree()
 	Place(ManaBar, FAnchors(0.5f, 1.f), FVector2D(0.5f, 1.f), FMargin(0.f, -50.f, 320.f, 10.f), false);
 
 	// Controls hint, bottom left.
-	HelpText = MakeText(TEXT("Tab  Spellbook     E  Pick up / drop     LMB  Punch / throw     Wheel  Hold distance     Shift  Sprint     Ctrl  Crouch     V  First / third person     Q  Wand (RMB cast, 1-4 spell)"), 13, FLinearColor(1.f, 1.f, 1.f, 0.6f));
+	HelpText = MakeText(TEXT("Tab  Spellbook     E  Pick up / drop     LMB  Punch / throw     Wheel  Hold distance     Shift  Sprint     Ctrl  Crouch     V  First / third person     Q  Wand (RMB cast, 1-4 spell)     H  Show keys"), 13, FLinearColor(1.f, 1.f, 1.f, 0.6f));
 	HelpText->SetAutoWrapText(false);
 	HelpText->SetShadowOffset(FVector2D(1.f, 1.f));
 	Place(HelpText, FAnchors(0.f, 1.f), FVector2D(0.f, 1.f), FMargin(24.f, -16.f, 0.f, 0.f), true);
@@ -441,10 +450,66 @@ void UPMHudWidget::RefreshStatus()
 	}
 }
 
+void UPMHudWidget::RefreshCrosshair(float DeltaTime)
+{
+	const UPMSpellcasterComponent* C = Caster.Get();
+	if (!C || !Crosshair)
+	{
+		return;
+	}
+	// Outline, so it reads on any background (only touches the font when the setting changes).
+	if (C->CrosshairOutline != AppliedOutline || !C->CrosshairOutlineColor.Equals(AppliedOutlineColor))
+	{
+		AppliedOutline = C->CrosshairOutline;
+		AppliedOutlineColor = C->CrosshairOutlineColor;
+		FSlateFontInfo Font = Crosshair->GetFont();
+		Font.OutlineSettings.OutlineSize = FMath::Max(AppliedOutline, 0);
+		Font.OutlineSettings.OutlineColor = AppliedOutlineColor;
+		Crosshair->SetFont(Font);
+	}
+	const UPMActiveRagdollComponent* Body = C->GetOwner()->FindComponentByClass<UPMActiveRagdollComponent>();
+	CrosshairTarget = FMath::FInterpTo(CrosshairTarget, Body && Body->IsAimOnTarget() ? 1.f : 0.f, DeltaTime, C->CrosshairBlendSpeed);
+	FLinearColor Color = FMath::Lerp(C->CrosshairColor, C->CrosshairTargetColor, CrosshairTarget);
+	float Scale = FMath::Lerp(1.f, C->CrosshairTargetScale, CrosshairTarget);
+	// A landed punch: flash, then fade back.
+	if (Body && C->CrosshairHitSeconds > 0.f)
+	{
+		const float SinceHit = static_cast<float>(GetWorld()->GetTimeSeconds() - Body->GetLastPunchHitTime());
+		const float Flash = 1.f - FMath::Clamp(SinceHit / C->CrosshairHitSeconds, 0.f, 1.f);
+		Color = FMath::Lerp(Color, C->CrosshairHitColor, Flash);
+		Scale = FMath::Lerp(Scale, C->CrosshairHitScale, Flash);
+	}
+	Crosshair->SetColorAndOpacity(FSlateColor(Color));
+	Crosshair->SetRenderScale(FVector2D(Scale, Scale));
+}
+
+void UPMHudWidget::RefreshHelp()
+{
+	const UPMSpellcasterComponent* C = Caster.Get();
+	if (!C || !HelpText)
+	{
+		return;
+	}
+	const double Now = GetWorld()->GetTimeSeconds();
+	if (HelpUntil < 0.0)
+	{
+		HelpUntil = Now + C->HelpVisibleSeconds; // First tick of play.
+	}
+	float Alpha = 1.f;
+	if (C->HelpVisibleSeconds > 0.f)
+	{
+		Alpha = 1.f - FMath::Clamp(static_cast<float>(Now - HelpUntil) / FMath::Max(C->HelpFadeSeconds, 0.01f), 0.f, 1.f);
+	}
+	HelpText->SetRenderOpacity(Alpha);
+	HelpText->SetVisibility(Alpha > 0.f ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+}
+
 void UPMHudWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 	RefreshStatus();
+	RefreshCrosshair(InDeltaTime);
+	RefreshHelp();
 
 	// Ink can change from other casts while the book is open.
 	if (Caster.IsValid() && Caster->IsSpellbookOpen())

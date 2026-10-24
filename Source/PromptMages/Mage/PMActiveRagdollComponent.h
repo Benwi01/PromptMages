@@ -60,6 +60,12 @@ public:
 	float GetHeldMassKg() const { return HeldMass; }
 	/** "[E] Pick up Barrel (25 kg)" etc. for what the crosshair is on; empty when there's nothing. */
 	const FString& GetInteractPrompt() const { return InteractPrompt; }
+
+	/** True when the crosshair is on something you could pick up, drag or punch (the HUD lights up). */
+	bool IsAimOnTarget() const { return bAimOnTarget; }
+
+	/** World time of the last punch that connected (the HUD flashes the crosshair). */
+	double GetLastPunchHitTime() const { return LastPunchHitTime; }
 	bool IsSprinting() const { return bSprinting; }
 
 	/** E: pick up / drag what the crosshair is on, or drop what you hold. */
@@ -288,6 +294,30 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
 	TObjectPtr<USoundBase> PunchSwingSound;
 
+	/** Played at your feet when you land; louder the harder you land (empty = silent). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Sounds")
+	TObjectPtr<USoundBase> LandingSound;
+
+	/** Landings slower than this (cm/s) make no sound, so walking off a step stays quiet. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Sounds")
+	float LandingSoundMinSpeed = 300.f;
+
+	/** Played when you pick something up or start dragging it (empty = silent). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Sounds")
+	TObjectPtr<USoundBase> PickUpSound;
+
+	/** Played when you let go with E, or lose hold of it (empty = silent). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Sounds")
+	TObjectPtr<USoundBase> DropSound;
+
+	/** Played when you throw; louder the harder the throw (empty = silent). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Sounds")
+	TObjectPtr<USoundBase> ThrowSound;
+
+	/** Played when something knocks you back; louder the harder the hit (empty = silent). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Sounds")
+	TObjectPtr<USoundBase> StaggerSound;
+
 	/** How hard a punch shoves another character (cm/s). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Punch")
 	float PunchKnockback = 550.f;
@@ -427,6 +457,8 @@ private:
 	float DragDistance = 100.f;
 	float DragHeight = 50.f;
 	FString InteractPrompt;
+	bool bAimOnTarget = false;
+	double LastPunchHitTime = -100.0;
 
 	/** Seconds since the current punch started (-1 = not punching), which fist, and whether it has landed. */
 	float PunchTime = -1.f;

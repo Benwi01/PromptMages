@@ -57,6 +57,50 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Casting")
 	float MaxSoloLiftKg = 40.f;
 
+	/** Crosshair colour normally. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	FLinearColor CrosshairColor = FLinearColor(1.f, 1.f, 1.f, 0.95f);
+
+	/** Crosshair colour and size while it's on something you can pick up, drag or punch. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	FLinearColor CrosshairTargetColor = FLinearColor(1.f, 0.78f, 0.25f, 1.f);
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	float CrosshairTargetScale = 1.25f;
+
+	/** When a punch lands the crosshair flashes this colour and size, fading back over CrosshairHitSeconds. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	FLinearColor CrosshairHitColor = FLinearColor(1.f, 1.f, 1.f, 1.f);
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	float CrosshairHitScale = 1.6f;
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	float CrosshairHitSeconds = 0.15f;
+
+	/** A dark outline (px) keeps the crosshair readable on light objects. 0 = none. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD", meta = (ClampMin = "0", ClampMax = "6"))
+	int32 CrosshairOutline = 2;
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	FLinearColor CrosshairOutlineColor = FLinearColor(0.f, 0.f, 0.f, 0.8f);
+
+	/** How quickly the crosshair eases between normal and on-target (higher = snappier). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	float CrosshairBlendSpeed = 15.f;
+
+	/** The key list at the bottom fades out after this many seconds of play. 0 = always shown. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	float HelpVisibleSeconds = 15.f;
+
+	/** Pressing H shows the key list again for this many seconds. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	float HelpShowAgainSeconds = 8.f;
+
+	/** How long (s) the key list takes to fade out. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|HUD")
+	float HelpFadeSeconds = 1.f;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -67,6 +111,7 @@ private:
 	void TryInitLocalPlayer();
 
 	void OnTabPressed();
+	void OnHelpPressed();
 
 	FVector FindTargetPoint() const;
 	void ShowTargetMarker(bool bShow);
