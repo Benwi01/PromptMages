@@ -111,6 +111,18 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Movement")
 	float BrakingDeceleration = 650.f;
 
+	/** Grip on the ground: higher = sharper turns and quicker stops, lower = slidier. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Movement")
+	float GroundFriction = 5.f;
+
+	/** Upward speed of a jump (cm/s). With JumpGravityScale this sets the jump's height and hang time. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Movement")
+	float JumpVelocity = 500.f;
+
+	/** Gravity on the mage (1 = normal). Higher = less floaty jumps and falls. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Movement")
+	float JumpGravityScale = 1.4f;
+
 	// --- Hands ---
 
 	/** Guard pose (fists up after punching): where each hand goes, from the eyes in cm. X = forward, Y = out to the side, Z = up. */
@@ -223,6 +235,18 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
 	float CameraForwardOffset = 10.f;
 
+	/** Landing dip: how far the camera drops per cm/s of landing speed (0 = off). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
+	float LandingDipPerSpeed = 0.012f;
+
+	/** Landing dip: the most the camera drops on a hard landing, cm. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
+	float LandingDipMax = 10.f;
+
+	/** Landing dip: how fast the camera springs back up (higher = quicker). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Camera")
+	float LandingDipRecovery = 8.f;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -329,4 +353,10 @@ private:
 	float DefaultMeshZ = 0.f;
 	float StandingHalfHeight = 96.f;
 	float StandingEyeHeight = 64.f;
+
+	/** Landing dip state: falling last frame, how fast we were falling, and the dip (cm) now and to come. */
+	bool bWasFalling = false;
+	float FallSpeed = 0.f;
+	float DipTarget = 0.f;
+	float CameraDip = 0.f;
 };

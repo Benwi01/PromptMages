@@ -186,7 +186,9 @@ void UPMActiveRagdollComponent::SetupBody()
 	Movement->MaxWalkSpeed = WalkSpeed;
 	Movement->MaxAcceleration = Acceleration;
 	Movement->BrakingDecelerationWalking = BrakingDeceleration;
-	Movement->GroundFriction = 3.f;
+	Movement->GroundFriction = GroundFriction;
+	Movement->JumpZVelocity = JumpVelocity;
+	Movement->GravityScale = JumpGravityScale;
 
 	// Crouch (Ctrl): the capsule shrinks and we drop the hips ourselves (see UpdateCrouch).
 	Movement->GetNavAgentPropertiesRef().bCanCrouch = true;
@@ -435,6 +437,19 @@ void UPMActiveRagdollComponent::UpdateCrouch(float DeltaTime)
 	{
 		bLegsRelaxed = bCrouched;
 		ApplyBodyDrives();
+		// Crouched, the hidden physics legs just follow the animation (the visible legs bend with their own
+		// solver, see UPMVisualBodyComponent); simulated, they'd be shoved into the floor by the dropped hips.
+		if (bSimulateLegs)
+		{
+			Mesh->SetAllBodiesBelowSimulatePhysics(PMRagdoll::ThighL, !bCrouched, true);
+			Mesh->SetAllBodiesBelowSimulatePhysics(PMRagdoll::ThighR, !bCrouched, true);
+		}
+	}
+
+	// The visible body bends its knees to keep the feet on the floor.
+	if (UPMVisualBodyComponent* VisualBody = GetOwner()->FindComponentByClass<UPMVisualBodyComponent>())
+	{
+		VisualBody->SetHipDrop(HipDrop);
 	}
 }
 
@@ -477,6 +492,10 @@ void UPMActiveRagdollComponent::UpdateMoveSpeed()
 			: FMath::Lerp(1.f, 0.85f, FMath::Clamp(HeldMass / CarryMaxKg, 0.f, 1.f));
 	}
 	Movement->MaxWalkSpeed = Speed;
+	// Applied every frame so the Movement settings can be tuned while playing.
+	Movement->GroundFriction = GroundFriction;
+	Movement->JumpZVelocity = JumpVelocity;
+	Movement->GravityScale = JumpGravityScale;
 }
 
 // --- Picking things up ---------------------------------------------------------------------------
@@ -912,6 +931,22 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 	const FVector Forward = FRotator(0.f, Character->GetControlRotation().Yaw, 0.f).Vector();
 	FVector CameraLocation = FMath::Lerp(Eye, SmoothedHead, CameraHeadFollow) + Forward * CameraForwardOffset;
 
+	// Landing dip: the harder you land, the further the camera drops, then it springs back.
+	const bool bFalling = Movement->IsFalling();
+	if (bFalling)
+	{
+		FallSpeed = FMath::Max(FallSpeed, -Movement->Velocity.Z);
+	}
+	else if (bWasFalling)
+	{
+		DipTarget = FMath::Min(FallSpeed * LandingDipPerSpeed, LandingDipMax);
+		FallSpeed = 0.f;
+	}
+	bWasFalling = bFalling;
+	CameraDip = FMath::FInterpTo(CameraDip, DipTarget, DeltaTime, 30.f);
+	DipTarget = FMath::FInterpTo(DipTarget, 0.f, DeltaTime, LandingDipRecovery);
+	CameraLocation.Z -= CameraDip;
+
 	// pm.ThirdPerson <distance>: look at your own mage from behind (debugging and fun).
 	const float ThirdPerson = PMRagdoll::CVarThirdPerson.GetValueOnGameThread();
 	if (ThirdPerson > 0.f)
@@ -922,7 +957,7 @@ void UPMActiveRagdollComponent::UpdateCamera(float DeltaTime)
 		ViewRot.Yaw += Orbit;
 		const FRotationMatrix ViewAxes(ViewRot);
 		CameraLocation = Eye - ViewRot.Vector() * ThirdPerson
-			+ ViewAxes.GetUnitAxis(EAxis::Y) * ThirdPersonOffset.X + FVector(0.f, 0.f, ThirdPersonOffset.Y);
+			+ ViewAxes.GetUnitAxis(EAxis::Y) * ThirdPersonOffset.X + FVector(0.f, 0.f, ThirdPersonOffset.Y - CameraDip);
 		Camera->bUsePawnControlRotation = FMath::IsNearlyZero(Orbit);
 		if (!Camera->bUsePawnControlRotation)
 		{

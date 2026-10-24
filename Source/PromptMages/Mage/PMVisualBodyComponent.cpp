@@ -125,6 +125,7 @@ void UPMVisualBodyComponent::BeginPlay()
 
 	BuildLinks();
 	BuildFingerCurls();
+	BuildLegs();
 	AttachCostume();
 	CopyPose();
 }
@@ -524,6 +525,8 @@ void UPMVisualBodyComponent::CopyPose()
 		CurlFinger(i);
 	}
 
+	SolveLegs();
+
 	// Back to parent-relative transforms for the poseable mesh.
 	TArray<FTransform>& Local = Visual->BoneSpaceTransforms;
 	if (Local.Num() != TargetComponent.Num())
@@ -582,4 +585,107 @@ bool UPMVisualBodyComponent::GetGripPoint(int32 Hand, FVector& OutWorld) const
 	const FTransform& HandNow = TargetComponent[HandBones[Hand]];
 	OutWorld = Visual->GetComponentTransform().TransformPosition(HandNow.GetLocation() + HandNow.GetRotation().RotateVector(GripPointLocal[Hand]));
 	return true;
+}
+
+void UPMVisualBodyComponent::BuildLegs()
+{
+	const FReferenceSkeleton& DstRef = Visual->GetSkinnedAsset()->GetRefSkeleton();
+	auto IsBelow = [&DstRef](int32 Bone, int32 Root)
+	{
+		for (int32 b = Bone; b != INDEX_NONE; b = DstRef.GetParentIndex(b))
+		{
+			if (b == Root)
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	for (int32 Leg = 0; Leg < 2; ++Leg)
+	{
+		const TCHAR* Side = Leg == 0 ? TEXT("L") : TEXT("R");
+		const TCHAR* Names[3] = { TEXT("DEF-thigh"), TEXT("DEF-shin"), TEXT("DEF-foot") };
+		for (int32 j = 0; j < 3; ++j)
+		{
+			LegBones[Leg][j] = FindVisualBone(FName(FString::Printf(TEXT("%s.%s"), Names[j], Side)));
+			LegChains[Leg][j].Reset();
+			if (LegBones[Leg][j] == INDEX_NONE)
+			{
+				UE_LOG(LogPromptMages, Warning, TEXT("Visual body: no %s.%s, that leg won't bend when crouching."), Names[j], Side);
+				continue;
+			}
+			for (int32 b = 0; b < DstRef.GetNum(); ++b)
+			{
+				if (IsBelow(b, LegBones[Leg][j]))
+				{
+					LegChains[Leg][j].Add(b);
+				}
+			}
+		}
+	}
+}
+
+void UPMVisualBodyComponent::SolveLegs()
+{
+	if (HipDrop < 0.5f || !Visual)
+	{
+		return;
+	}
+	// Work in the visible body's own space.
+	const FQuat ToComponent = Visual->GetComponentQuat().Inverse();
+	const FVector Up = ToComponent.RotateVector(FVector::UpVector);
+	const FVector Forward = ToComponent.RotateVector(GetOwner()->GetActorForwardVector());
+	const FVector Right = ToComponent.RotateVector(GetOwner()->GetActorRightVector());
+
+	// Turn a bone and everything below it about a pivot. Positions and rotations only (the bones carry a x100 scale).
+	auto Turn = [this](const TArray<int32>& Chain, const FVector& Pivot, const FQuat& Delta)
+	{
+		for (const int32 b : Chain)
+		{
+			FTransform& T = TargetComponent[b];
+			T.SetLocation(Pivot + Delta.RotateVector(T.GetLocation() - Pivot));
+			T.SetRotation((Delta * T.GetRotation()).GetNormalized());
+		}
+	};
+
+	for (int32 Leg = 0; Leg < 2; ++Leg)
+	{
+		const int32 Thigh = LegBones[Leg][0], Shin = LegBones[Leg][1], Foot = LegBones[Leg][2];
+		if (Thigh == INDEX_NONE || Shin == INDEX_NONE || Foot == INDEX_NONE)
+		{
+			continue;
+		}
+		const FVector Hip = TargetComponent[Thigh].GetLocation();
+		const FVector Knee = TargetComponent[Shin].GetLocation();
+		const FVector Ankle = TargetComponent[Foot].GetLocation();
+		const FQuat FootRotation = TargetComponent[Foot].GetRotation();
+		const float Upper = (Knee - Hip).Size();
+		const float Lower = (Ankle - Knee).Size();
+
+		// The whole body (and so the straight-legged foot) dropped with the hips: the foot belongs back up on the floor.
+		const FVector Target = Ankle + Up * HipDrop;
+		const FVector ToTarget = Target - Hip;
+		const float RawReach = ToTarget.Size();
+		if (RawReach < 1.f || Upper < 1.f || Lower < 1.f)
+		{
+			continue;
+		}
+		const FVector Dir = ToTarget / RawReach;
+		const float Reach = FMath::Clamp(RawReach, FMath::Abs(Upper - Lower) + 0.1f, (Upper + Lower) * 0.999f);
+
+		// Two-bone solve: the knee sits off the hip-to-foot line, toward the front (and a little outward).
+		const float Along = (Upper * Upper - Lower * Lower + Reach * Reach) / (2.f * Reach);
+		const float Out = FMath::Sqrt(FMath::Max(Upper * Upper - Along * Along, 0.f));
+		const float Side = Leg == 0 ? -1.f : 1.f;
+		FVector Pole = Forward + Right * Side * CrouchKneesOut;
+		Pole = (Pole - Dir * FVector::DotProduct(Pole, Dir)).GetSafeNormal();
+		const FVector NewKnee = Hip + Dir * Along + Pole * Out;
+
+		Turn(LegChains[Leg][0], Hip, FQuat::FindBetweenNormals((Knee - Hip).GetSafeNormal(), (NewKnee - Hip).GetSafeNormal()));
+		const FVector KneeNow = TargetComponent[Shin].GetLocation();
+		const FVector AnkleNow = TargetComponent[Foot].GetLocation();
+		Turn(LegChains[Leg][1], KneeNow, FQuat::FindBetweenNormals((AnkleNow - KneeNow).GetSafeNormal(), (Target - KneeNow).GetSafeNormal()));
+		// Keep the foot at the angle it had (flat on the floor), not tipped by the bent leg.
+		Turn(LegChains[Leg][2], TargetComponent[Foot].GetLocation(), (FootRotation * TargetComponent[Foot].GetRotation().Inverse()).GetNormalized());
+	}
 }

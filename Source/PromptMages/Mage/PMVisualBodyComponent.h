@@ -91,6 +91,10 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Wand Grip")
 	FVector GripPointOffset = FVector::ZeroVector;
 
+	/** Crouch: how much the knees point outward as well as forward when the legs bend (0 = straight ahead). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Crouch")
+	float CrouchKneesOut = 0.3f;
+
 	/** Costume pieces attached to the body (the mage outfit). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Costume")
 	TArray<FPMCostumePart> Costume;
@@ -105,6 +109,9 @@ public:
 
 	/** Where a wand passes through this hand's fist, in world space. False until the body is posed. */
 	bool GetGripPoint(int32 Hand, FVector& OutWorld) const;
+
+	/** Crouch: how far (cm) the hips have dropped. The visible legs bend at the knees to keep the feet on the floor. */
+	void SetHipDrop(float Cm) { HipDrop = Cm; }
 
 	/** Close (or open) a hand into a fist: 0 = left, 1 = right. Eases over about a tenth of a second. */
 	void SetFist(int32 Hand, bool bClosed) { if (Hand == 0 || Hand == 1) { FistTarget[Hand] = bClosed ? 1.f : 0.f; } }
@@ -131,6 +138,9 @@ private:
 
 	void BuildLinks();
 	void BuildFingerCurls();
+	void BuildLegs();
+	/** Crouching: bend each visible leg so its foot stays on the floor while the hips are lowered. */
+	void SolveLegs();
 	void CopyPose();
 	void AttachCostume();
 	int32 FindVisualBone(const FName& Name) const;
@@ -178,6 +188,11 @@ private:
 	FVector WandGripPalm[2];
 	float GripBlend[2] = { 0.f, 0.f };
 	FQuat HandCorrection[2] = { FQuat::Identity, FQuat::Identity };
+
+	/** Per leg (0 = left, 1 = right): thigh, shin and foot bones, and each one's bone plus everything below it. */
+	int32 LegBones[2][3] = { { INDEX_NONE, INDEX_NONE, INDEX_NONE }, { INDEX_NONE, INDEX_NONE, INDEX_NONE } };
+	TArray<int32> LegChains[2][3];
+	float HipDrop = 0.f;
 
 	int32 SrcPelvis = INDEX_NONE;
 	int32 DstHip = INDEX_NONE;
