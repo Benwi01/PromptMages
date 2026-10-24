@@ -12,6 +12,7 @@ class UInputComponent;
 class USceneComponent;
 class UStaticMeshComponent;
 class UMaterialInstanceDynamic;
+class UNiagaraComponent;
 
 /**
  * Q draws the wand into the right hand (the right arm then points it at the crosshair instead of grabbing).
@@ -157,8 +158,10 @@ private:
 
 	void OnToggleWand() { SetWandOut(!bWandOut); }
 	void OnCastPressed();
-	/** The tether beam effect from the wand to where it grabbed (or reached). */
-	void TetherBeam(const FVector& From, const FVector& To);
+	/** The tether beam effect from the wand to where it grabbed (or reached). Target: what it grabbed, so the end follows it. */
+	void TetherBeam(const FVector& From, const FVector& To, USceneComponent* Target = nullptr);
+	/** Keeps the tether beam on the wand tip and the grabbed spot while it shows (you get yanked, things get pulled). */
+	void UpdateBeam();
 
 	void OnSelect1() { SelectSpell(EPMSpell::Fireball); }
 	void OnSelect2() { SelectSpell(EPMSpell::Gust); }
@@ -182,6 +185,11 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> TipMaterial;
 
 	TWeakObjectPtr<APlayerController> BoundPC;
+
+	/** The tether beam on screen, and the spot it grabbed (local to BeamTarget). */
+	TWeakObjectPtr<UNiagaraComponent> ActiveBeam;
+	TWeakObjectPtr<USceneComponent> BeamTarget;
+	FVector BeamTargetLocal = FVector::ZeroVector;
 
 	bool bWandOut = false;
 	EPMSpell Selected = EPMSpell::Fireball;

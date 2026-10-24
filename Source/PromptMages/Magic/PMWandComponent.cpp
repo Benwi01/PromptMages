@@ -34,7 +34,7 @@ UPMWandComponent::UPMWandComponent()
 	PrimaryComponentTick.TickGroup = TG_PostUpdateWork;
 
 	// Default Niagara effects in /Game/PromptMages/VFX. Each reads User.Color and User.Scale; the tether beam also
-	// User.BeamStart / User.BeamEnd. Their materials and meshes come from SourceArt/VFX/make_vfx_materials.py.
+	// User.BeamEnd (it starts at the effect's own position). Their materials and meshes come from SourceArt/VFX/make_vfx_materials.py.
 	auto Path = [](const TCHAR* Name) { return TSoftObjectPtr<UNiagaraSystem>(FSoftObjectPath(FString::Printf(TEXT("/Game/PromptMages/VFX/%s.%s"), Name, Name))); };
 	Fireball.CastEffect = Path(TEXT("NS_Fireball_Cast"));
 	Fireball.TravelEffect = Path(TEXT("NS_Fireball_Trail"));
@@ -151,6 +151,27 @@ void UPMWandComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 	CastKick = FMath::FInterpTo(CastKick, 0.f, DeltaTime, 12.f);
 	UpdateCrystal(DeltaTime);
 	UpdateWandVisual();
+	UpdateBeam();
+}
+
+void UPMWandComponent::UpdateBeam()
+{
+	UNiagaraComponent* Beam = ActiveBeam.Get();
+	if (!Beam || !Beam->IsActive())
+	{
+		ActiveBeam = nullptr;
+		return;
+	}
+	FVector Tip, Direction, AimPoint;
+	if (GetAim(Tip, Direction, AimPoint))
+	{
+		// The beam starts at the effect's own position, so moving it keeps the beam on the wand tip.
+		Beam->SetWorldLocation(Tip);
+	}
+	if (const USceneComponent* Target = BeamTarget.Get())
+	{
+		Beam->SetVariableVec3(TEXT("BeamEnd"), Target->GetComponentTransform().TransformPosition(BeamTargetLocal));
+	}
 }
 
 void UPMWandComponent::Toast(const FString& Message) const
@@ -442,13 +463,19 @@ void UPMWandComponent::CastGust(const FVector& Tip, const FVector& Direction)
 	}
 }
 
-void UPMWandComponent::TetherBeam(const FVector& From, const FVector& To)
+void UPMWandComponent::TetherBeam(const FVector& From, const FVector& To, USceneComponent* Target)
 {
 	const FLinearColor Color = FPMSpellDef::Get(EPMSpell::Tether).Color;
 	if (UNiagaraComponent* Beam = PMVFX::Spawn(GetWorld(), Tether.TravelEffect, From, (To - From).Rotation(), Color, Tether.EffectScale))
 	{
-		Beam->SetVariableVec3(TEXT("BeamStart"), From);
 		Beam->SetVariableVec3(TEXT("BeamEnd"), To);
+		// Simulate after the wand has moved this frame, so the beam doesn't lag a frame behind the tip.
+		Beam->SetTickBehavior(ENiagaraTickBehavior::UsePrereqs);
+		Beam->AddTickPrerequisiteComponent(this);
+		Beam->SetWorldLocation(From);
+		ActiveBeam = Beam;
+		BeamTarget = Target;
+		BeamTargetLocal = Target ? Target->GetComponentTransform().InverseTransformPosition(To) : To;
 		return;
 	}
 	APMSpellFX::SpawnBeam(GetWorld(), From, To, Color, 0.3f);
@@ -466,7 +493,7 @@ void UPMWandComponent::CastTether(const FVector& Tip, const FVector& Direction, 
 		TetherBeam(Tip, End);
 		return; // Missed.
 	}
-	TetherBeam(Tip, Hit.ImpactPoint);
+	TetherBeam(Tip, Hit.ImpactPoint, Hit.GetComponent());
 	PMVFX::Spawn(GetWorld(), Tether.ImpactEffect, Hit.ImpactPoint, Hit.ImpactNormal.Rotation(), FPMSpellDef::Get(EPMSpell::Tether).Color, Tether.EffectScale);
 
 	UPrimitiveComponent* Target = Hit.GetComponent();
