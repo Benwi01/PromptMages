@@ -169,6 +169,15 @@ void UPMActiveRagdollComponent::SetupBody()
 	}
 	Mesh->SetAllBodiesBelowPhysicsBlendWeight(PMRagdoll::Pelvis, 1.f, false, false);
 
+	// Listen for things hitting us (the body or the capsule, which is what objects usually bump into).
+	Mesh->SetNotifyRigidBodyCollision(true);
+	Mesh->OnComponentHit.AddDynamic(this, &UPMActiveRagdollComponent::OnBodyHit);
+	if (UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+	{
+		Capsule->SetNotifyRigidBodyCollision(true);
+		Capsule->OnComponentHit.AddDynamic(this, &UPMActiveRagdollComponent::OnBodyHit);
+	}
+
 	for (FPMArmState& Arm : Arms)
 	{
 		Arm.Reach = NewObject<UPhysicsHandleComponent>(GetOwner());
@@ -382,9 +391,25 @@ void UPMActiveRagdollComponent::UpdateMotors(float DeltaTime)
 	}
 
 	// Motors are strong on the ground and drop in the air (GDD 2.1).
-	const float Target = Movement->IsFalling() ? AirborneMotorScale : 1.f;
+	const bool bFalling = Movement->IsFalling();
+	const float Target = bFalling ? AirborneMotorScale : 1.f;
 	MotorScale = FMath::FInterpTo(MotorScale, Target, DeltaTime, 6.f);
-	PhysicalAnimation->SetStrengthMultiplyer(MotorScale);
+
+	// Landing wobble: the harder the landing, the more the body gives before it recovers.
+	if (bFalling)
+	{
+		BodyFallSpeed = FMath::Max(BodyFallSpeed, -Movement->Velocity.Z);
+	}
+	else if (bBodyWasFalling)
+	{
+		const float Hardness = FMath::Clamp(BodyFallSpeed / FMath::Max(LandingWobbleFullSpeed, 1.f), 0.f, 1.f);
+		MotorDip = FMath::Max(MotorDip, LandingWobble * Hardness);
+		UE_LOG(LogPromptMages, Verbose, TEXT("Landing wobble %.2f (landed at %.0f cm/s)"), LandingWobble * Hardness, BodyFallSpeed);
+		BodyFallSpeed = 0.f;
+	}
+	bBodyWasFalling = bFalling;
+	MotorDip = FMath::FInterpConstantTo(MotorDip, 0.f, DeltaTime, WobbleRecoveryPerSecond);
+	PhysicalAnimation->SetStrengthMultiplyer(MotorScale * (1.f - MotorDip));
 }
 
 void UPMActiveRagdollComponent::ApplyBodyDrives()
@@ -775,6 +800,10 @@ void UPMActiveRagdollComponent::PunchHit()
 	{
 		const FVector Shove = Dir.GetSafeNormal2D() * PunchKnockback + FVector(0.f, 0.f, PunchKnockback * 0.35f);
 		Victim->LaunchCharacter(Shove, true, false);
+		if (UPMActiveRagdollComponent* VictimBody = Victim->FindComponentByClass<UPMActiveRagdollComponent>())
+		{
+			VictimBody->Stagger(Dir, PunchStagger);
+		}
 		UE_LOG(LogPromptMages, Verbose, TEXT("Punched %s"), *Victim->GetName());
 		return;
 	}
@@ -801,6 +830,67 @@ void UPMActiveRagdollComponent::PunchHit()
 	const FVector Push = (Dir.GetSafeNormal2D() + FVector(0.f, 0.f, FMath::Max(Dir.Z, 0.f) + 0.35f)).GetSafeNormal();
 	Comp->AddImpulseAtLocation(Push * Speed * Mass, Hit.ImpactPoint);
 	UE_LOG(LogPromptMages, Verbose, TEXT("Punched %s (%.0f kg) at %.0f cm/s"), *PMRagdoll::NameOf(Comp), Mass, Speed);
+}
+
+// --- Staggering ---------------------------------------------------------------------------------
+
+void UPMActiveRagdollComponent::Stagger(const FVector& Direction, float Strength)
+{
+	Strength = FMath::Clamp(Strength, 0.f, 1.f);
+	if (Strength <= 0.f || !bBodyReady)
+	{
+		return;
+	}
+	// One shove per hit: a crate bouncing against you doesn't stack a pile of staggers.
+	const double Now = GetWorld()->GetTimeSeconds();
+	if (Now - LastStaggerTime < 0.25 && Strength <= LastStaggerStrength)
+	{
+		return;
+	}
+	LastStaggerTime = Now;
+	LastStaggerStrength = Strength;
+
+	MotorDip = FMath::Max(MotorDip, StaggerWobble * Strength);
+	const FVector Flat = Direction.GetSafeNormal2D();
+	if (ACharacter* Character = Cast<ACharacter>(GetOwner()))
+	{
+		Character->LaunchCharacter(Flat * StaggerShove * Strength, false, false);
+	}
+	// Knock the upper body back so you see the hit land.
+	Mesh->AddImpulse(Direction.GetSafeNormal() * StaggerBodyPush * Strength, PMRagdoll::Spine, true);
+	UE_LOG(LogPromptMages, Verbose, TEXT("Staggered %.2f"), Strength);
+}
+
+void UPMActiveRagdollComponent::OnBodyHit(UPrimitiveComponent* HitComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp,
+	FVector NormalImpulse, const FHitResult& Hit)
+{
+	if (!OtherComp || !OtherActor || OtherActor == GetOwner())
+	{
+		return;
+	}
+	// The thing as a whole (a spawned object's welded root, not the sub-part that touched us).
+	UPrimitiveComponent* OtherBody = Cast<UPrimitiveComponent>(OtherActor->GetRootComponent());
+	if (!OtherBody || !OtherBody->IsSimulatingPhysics())
+	{
+		OtherBody = OtherComp;
+	}
+	if (!OtherBody->IsSimulatingPhysics() || OtherBody == Held.Get())
+	{
+		return;
+	}
+
+	// The hit is reported after it's been resolved (the object has already stopped), so judge it by the collision
+	// impulse, minus what we put in ourselves by walking into the object.
+	const FVector ToUs = (GetOwner()->GetActorLocation() - OtherBody->GetComponentLocation()).GetSafeNormal();
+	const float OurPush = OtherBody->GetMass() * FMath::Max(FVector::DotProduct(Movement->Velocity, -ToUs), 0.f);
+	const float Impact = NormalImpulse.Size() - OurPush * 1.5f;
+	const float Strength = (Impact - StaggerMinMomentum) / FMath::Max(StaggerFullMomentum - StaggerMinMomentum, 1.f);
+	UE_LOG(LogPromptMages, Verbose, TEXT("Hit by %s: impulse %.0f, ours %.0f -> stagger %.2f"),
+		*OtherActor->GetName(), NormalImpulse.Size(), OurPush, FMath::Clamp(Strength, 0.f, 1.f));
+	if (Strength > 0.f)
+	{
+		Stagger(ToUs, Strength);
+	}
 }
 
 // --- Hands ---------------------------------------------------------------------------------------

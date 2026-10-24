@@ -67,6 +67,11 @@ public:
 	void Throw();
 	/** LMB with empty hands: punch with the next fist (left/right alternate; left only while the wand is out). */
 	void Punch();
+	/**
+	 * Knock the mage off balance: the body loosens for a moment and gets shoved along Direction.
+	 * Strength 0..1 (1 = the hardest hit). Called for hard impacts on the body and when punched.
+	 */
+	void Stagger(const FVector& Direction, float Strength);
 	bool IsPunching() const { return PunchTime >= 0.f && PunchTime < PunchDuration; }
 
 	// --- Body ---
@@ -94,6 +99,45 @@ public:
 	/** Motor strength multiplier while airborne (GDD: motors drop during jumps). */
 	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Body")
 	float AirborneMotorScale = 0.6f;
+
+	/** Landing wobble: how much the body's motors dip on the hardest landing (0.5 = half strength). 0 = off. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Body")
+	float LandingWobble = 0.5f;
+
+	/** Landing wobble: landing speed (cm/s) that gives the full wobble. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Body")
+	float LandingWobbleFullSpeed = 900.f;
+
+	/** How fast the motors recover from a landing wobble or a stagger (strength per second). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Body")
+	float WobbleRecoveryPerSecond = 1.6f;
+
+	/** Stagger: how much the motors dip on the hardest hit. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Stagger")
+	float StaggerWobble = 0.6f;
+
+	/** Stagger: how hard the hardest hit shoves you (cm/s added to your movement). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Stagger")
+	float StaggerShove = 350.f;
+
+	/** Stagger: how hard the hardest hit knocks the upper body back (cm/s). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Stagger")
+	float StaggerBodyPush = 250.f;
+
+	/** Stagger: an object must come at you at least this fast (cm/s) to count. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Stagger")
+	float StaggerMinSpeed = 300.f;
+
+	/** Stagger: hits below this momentum (kg x cm/s) are ignored; at StaggerFullMomentum you get the full stagger. */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Stagger")
+	float StaggerMinMomentum = 4000.f;
+
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Stagger")
+	float StaggerFullMomentum = 25000.f;
+
+	/** How much a punch staggers the mage it hits (0..1). */
+	UPROPERTY(EditAnywhere, Category = "Prompt Mages|Stagger")
+	float PunchStagger = 0.7f;
 
 	// --- Movement ---
 
@@ -359,4 +403,15 @@ private:
 	float FallSpeed = 0.f;
 	float DipTarget = 0.f;
 	float CameraDip = 0.f;
+
+	/** Landing wobble / stagger: how much the motors are weakened right now (0..1), and landing detection. */
+	float MotorDip = 0.f;
+	bool bBodyWasFalling = false;
+	float BodyFallSpeed = 0.f;
+	double LastStaggerTime = -100.0;
+	float LastStaggerStrength = 0.f;
+
+	/** Something hit the body or the capsule: stagger if it came in hard. */
+	UFUNCTION()
+	void OnBodyHit(UPrimitiveComponent* HitComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit);
 };
